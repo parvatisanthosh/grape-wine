@@ -1,0 +1,10 @@
+timestamp,precision,model_path,device,iteration,requested_output_tokens,actual_input_tokens,actual_output_tokens,pipeline_construction_ms,wall_time_ms,openvino_generation_ms,ttft_ms,tpot_ms_per_token,throughput_tokens_per_second,rss_before_load_mib,rss_after_load_mib,rss_after_warmup_mib,sampled_peak_rss_mib,rss_after_generation_mib,status,error
+2026-10-04T12:40:21,FP16,C:\Users\parva\tinyllama-ov,CPU,1,50,27,50,1602.89,5117.75,5117.38,413.45,95.97,10.42,54.4,127.6,3943.2,3969.8,3970.0,success,
+2026-10-04T12:40:26,FP16,C:\Users\parva\tinyllama-ov,CPU,2,50,27,50,1602.89,7108.74,7108.58,540.54,134.02,7.46,54.4,127.6,3943.2,3972.3,3972.3,success,
+2026-10-04T12:40:34,FP16,C:\Users\parva\tinyllama-ov,CPU,3,50,27,50,1602.89,6317.06,6316.93,628.39,116.06,8.62,54.4,127.6,3943.2,3973.0,3973.1,success,
+2026-10-04T12:51:17,INT8,C:\Users\parva\tinyllama-int8,CPU,1,50,27,50,1509.89,4236.46,4236.34,455.62,77.14,12.96,54.2,135.3,2123.9,2125.1,2125.1,success,
+2026-10-04T12:51:21,INT8,C:\Users\parva\tinyllama-int8,CPU,2,50,27,50,1509.89,4040.1,4039.97,447.19,73.3,13.64,54.2,135.3,2123.9,2126.2,2126.2,success,
+2026-10-04T12:51:26,INT8,C:\Users\parva\tinyllama-int8,CPU,3,50,27,50,1509.89,4964.65,4964.53,502.79,91.03,10.99,54.2,135.3,2123.9,2126.5,2126.5,success,
+2026-10-04T12:53:16,INT4,C:\Users\parva\tinyllama-int4,CPU,1,50,27,50,2160.76,2550.64,2550.53,325.17,45.4,22.03,54.3,274.5,1335.5,1337.0,1337.0,success,
+2026-10-04T12:53:18,INT4,C:\Users\parva\tinyllama-int4,CPU,2,50,27,50,2160.76,2810.96,2810.85,404.3,49.1,20.37,54.3,274.5,1335.5,1338.2,1338.2,success,
+2026-10-04T12:53:21,INT4,C:\Users\parva\tinyllama-int4,CPU,3,50,27,50,2160.76,2533.45,2533.33,363.05,44.28,22.59,54.3,274.5,1335.5,1338.5,1338.6,success,
