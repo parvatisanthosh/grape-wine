@@ -26,6 +26,7 @@ OPTION_FLAGS = {
     "kv_precision": "--kv-precision",
     "threads": "--threads",
     "cores": "--cores",
+    "cache_dir": "--cache-dir",
 }
 
 

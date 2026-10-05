@@ -13,7 +13,9 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <pdh.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -81,6 +83,7 @@ struct Options {
     std::string kv_precision = "default";  // default | f32 | f16 | bf16 | u8 | u4
     int threads = 0;                       // 0 = plugin default
     std::string cores = "any";             // any | pcore | ecore (CPU only)
+    std::string cache_dir;                 // compiled-model cache, empty = off
     std::string output;
 };
 
@@ -103,6 +106,7 @@ void print_usage() {
         "  --kv-precision TYPE       default | f32 | f16 | bf16 | u8 | u4\n"
         "  --threads N               CPU inference threads, 0 = plugin default\n"
         "  --cores TYPE              any | pcore | ecore (CPU only)\n"
+        "  --cache-dir DIR           Reuse compiled models across loads (ov::cache_dir)\n"
         "\n"
         "Output:\n"
         "  --output FILE             Also append JSON lines to FILE\n";
@@ -164,6 +168,7 @@ Options parse_arguments(int argc, char* argv[]) {
         else if (name == "--kv-precision") options.kv_precision = value;
         else if (name == "--threads") options.threads = static_cast<int>(parse_size(name, value));
         else if (name == "--cores") options.cores = value;
+        else if (name == "--cache-dir") options.cache_dir = value;
         else if (name == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option " + name);
     }
@@ -267,6 +272,66 @@ double sample_system_cpu_busy_percent() {
     }
     return 100.0 * static_cast<double>(total - idle) / static_cast<double>(total);
 }
+
+// Nominal (base) CPU frequency as reported by Windows.
+double get_base_cpu_mhz() {
+    DWORD mhz = 0;
+    DWORD size = sizeof(mhz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &mhz,
+                     &size) != ERROR_SUCCESS) {
+        return 0.0;
+    }
+    return static_cast<double>(mhz);
+}
+
+class JsonRow;
+
+// CPU behaviour averaged over one measured generation:
+// - "% Processor Performance" (the counter Task Manager uses for its speed
+//   display) gives effective frequency relative to base, so turbo and thermal
+//   or power throttling show up directly;
+// - system-wide busy time and this process's own CPU time separate the
+//   benchmark's load from background load during the run.
+class RunTelemetry {
+public:
+    RunTelemetry() {
+        if (PdhOpenQueryW(nullptr, 0, &m_query) == ERROR_SUCCESS &&
+            PdhAddEnglishCounterW(m_query,
+                                  L"\\Processor Information(_Total)\\% Processor Performance",
+                                  0,
+                                  &m_performance) == ERROR_SUCCESS) {
+            PdhCollectQueryData(m_query);
+        } else {
+            m_performance = nullptr;
+        }
+
+        GetSystemTimes(&m_idle, &m_kernel, &m_user);
+        FILETIME creation, exit_time;
+        GetProcessTimes(GetCurrentProcess(), &creation, &exit_time, &m_own_kernel, &m_own_user);
+    }
+
+    ~RunTelemetry() {
+        if (m_query != nullptr) {
+            PdhCloseQuery(m_query);
+        }
+    }
+
+    RunTelemetry(const RunTelemetry&) = delete;
+    RunTelemetry& operator=(const RunTelemetry&) = delete;
+
+    void finish(JsonRow& row, double base_mhz) const;
+
+private:
+    PDH_HQUERY m_query = nullptr;
+    PDH_HCOUNTER m_performance = nullptr;
+    FILETIME m_idle{}, m_kernel{}, m_user{};
+    FILETIME m_own_kernel{}, m_own_user{};
+};
 
 // Samples this process's working set in the background and keeps the maximum.
 class PeakMemorySampler {
@@ -377,6 +442,37 @@ private:
     std::vector<std::pair<std::string, std::string>> m_fields;
 };
 
+void RunTelemetry::finish(JsonRow& row, double base_mhz) const {
+    if (m_performance != nullptr && PdhCollectQueryData(m_query) == ERROR_SUCCESS) {
+        PDH_FMT_COUNTERVALUE value{};
+        if (PdhGetFormattedCounterValue(m_performance, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS) {
+            row.set("run_cpu_performance_percent", value.doubleValue, 1);
+            row.set("run_cpu_effective_mhz", value.doubleValue * base_mhz / 100.0, 0);
+        }
+    }
+
+    FILETIME idle, kernel, user;
+    GetSystemTimes(&idle, &kernel, &user);
+    FILETIME creation, exit_time, own_kernel, own_user;
+    GetProcessTimes(GetCurrentProcess(), &creation, &exit_time, &own_kernel, &own_user);
+
+    // System kernel time includes idle time.
+    const double system_total = static_cast<double>(
+        (filetime_to_u64(kernel) - filetime_to_u64(m_kernel)) + (filetime_to_u64(user) - filetime_to_u64(m_user)));
+    const double system_idle = static_cast<double>(filetime_to_u64(idle) - filetime_to_u64(m_idle));
+    const double own_busy = static_cast<double>(
+        (filetime_to_u64(own_kernel) - filetime_to_u64(m_own_kernel)) +
+        (filetime_to_u64(own_user) - filetime_to_u64(m_own_user)));
+
+    if (system_total > 0) {
+        const double system_busy_percent = 100.0 * (system_total - system_idle) / system_total;
+        const double own_percent = 100.0 * own_busy / system_total;
+        row.set("run_system_cpu_busy_percent", system_busy_percent, 1);
+        row.set("run_own_cpu_percent", own_percent, 1);
+        row.set("run_background_cpu_percent", std::max(0.0, system_busy_percent - own_percent), 1);
+    }
+}
+
 void emit_row(const JsonRow& row, const Options& options) {
     const std::string line = row.str();
     std::cout << line << std::endl;
@@ -434,6 +530,9 @@ ov::AnyMap build_pipeline_properties(const Options& options) {
     }
     if (options.threads > 0) {
         properties.insert(ov::inference_num_threads(options.threads));
+    }
+    if (!options.cache_dir.empty()) {
+        properties.insert(ov::cache_dir(options.cache_dir));
     }
     if (options.cores == "pcore") {
         properties.insert(ov::hint::scheduling_core_type(ov::hint::SchedulingCoreType::PCORE_ONLY));
@@ -496,10 +595,12 @@ JsonRow make_base_row(const Options& options) {
     row.set("kv_precision", options.kv_precision);
     row.set("threads", options.threads);
     row.set("cores", options.cores);
+    row.set("cache_dir", options.cache_dir);
     row.set("prompt_mode", options.prompt_mode);
     row.set("requested_input_tokens", options.prompt_tokens);
     row.set("requested_output_tokens", options.output_tokens);
     row.set("sys_total_ram_mib", get_total_ram_mib(), 1);
+    row.set("sys_base_cpu_mhz", get_base_cpu_mhz(), 0);
     return row;
 }
 
@@ -588,6 +689,7 @@ int main(int argc, char* argv[]) {
     base.set("rss_after_warmup_mib", get_rss_mib(), 1);
     base.set("commit_after_warmup_mib", get_commit_mib(), 1);
 
+    const double base_cpu_mhz = get_base_cpu_mhz();
     int failed_runs = 0;
 
     for (int iteration = 1; iteration <= options.runs; ++iteration) {
@@ -604,6 +706,7 @@ int main(int argc, char* argv[]) {
         row.set("error", "");
 
         PeakMemorySampler sampler;
+        RunTelemetry telemetry;
         bool succeeded = false;
 
         try {
@@ -643,6 +746,7 @@ int main(int argc, char* argv[]) {
         }
 
         const double peak_rss = sampler.stop();
+        telemetry.finish(row, base_cpu_mhz);
         row.set("sampled_peak_rss_mib", peak_rss, 1);
         row.set("rss_after_generation_mib", get_rss_mib(), 1);
         row.set("lifetime_peak_rss_mib", get_lifetime_peak_rss_mib(), 1);

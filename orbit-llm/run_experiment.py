@@ -65,6 +65,12 @@ def load_plan(plan_path):
             f"{sorted(unknown_labels)}"
         )
 
+    # Named variants are bundles of settings that do not form a clean grid
+    # (e.g. "pcore", "ecore", "gpu"). They become one more grid dimension.
+    if "variants" in plan:
+        plan["grid"]["variant"] = list(plan["variants"])
+
+    plan.setdefault("variants", {})
     plan.setdefault("base", {})
     plan.setdefault("rounds", 1)
     plan.setdefault("seed", 0)
@@ -201,7 +207,15 @@ def main():
 
         configuration = {
             **plan["base"],
-            **grid_values,
+            **{
+                key: value
+                for key, value in grid_values.items()
+                if key != "variant"
+            },
+            **plan["variants"].get(
+                grid_values.get("variant"),
+                {},
+            ),
         }
 
         rows = run_configuration(

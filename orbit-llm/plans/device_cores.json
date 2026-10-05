@@ -1,0 +1,29 @@
+{
+  "name": "device_cores",
+  "description": "Phase 5a: device (CPU vs Iris Xe iGPU) and CPU core placement on the hybrid i5-1335U (2 P-cores + 8 E-cores). Load time is recorded per invocation; GPU kernel compilation dominates it.",
+  "models": {
+    "INT8": "C:/Users/parva/tinyllama-int8",
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "variants": {
+    "cpu_auto": {},
+    "cpu_pcore": {"cores": "pcore"},
+    "cpu_ecore": {"cores": "ecore"},
+    "cpu_4t": {"threads": 4},
+    "cpu_8t": {"threads": 8},
+    "gpu": {"device": "GPU"}
+  },
+  "grid": {
+    "label": ["INT8", "INT4"],
+    "prompt_tokens": [128, 1024]
+  },
+  "rounds": 2,
+  "seed": 7,
+  "cooldown_seconds": 3
+}

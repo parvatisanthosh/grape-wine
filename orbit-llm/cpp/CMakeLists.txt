@@ -16,7 +16,7 @@ find_package(OpenVINOGenAI REQUIRED
 
 add_executable(orbit_run orbit_run.cpp)
 
-target_link_libraries(orbit_run PRIVATE openvino::genai psapi)
+target_link_libraries(orbit_run PRIVATE openvino::genai psapi pdh advapi32)
 
 if(MSVC)
     target_compile_options(orbit_run PRIVATE /W4 /utf-8)
