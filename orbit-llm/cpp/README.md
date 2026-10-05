@@ -38,6 +38,7 @@ Run `orbit_run.exe --help` for all options.
 | `--kv-precision` | `default`, `f32`, `f16`, `bf16`, `u8`, `u4` | KV-cache element type |
 | `--threads` | `0` = default | CPU inference threads |
 | `--cores` | `any`, `pcore`, `ecore` | CPU core type on hybrid CPUs |
+| `--cache-dir` | path, empty = off | Compiled-model cache; cuts GPU load time on later loads |
 | `--prompt-mode` | `cold`, `repeat` | Unique prompt per run, or the same prompt every run |
 
 With the PA backend, `orbit_run` starts from `LLMPipeline`'s own latency-oriented
@@ -50,7 +51,9 @@ caching, silently changing what is being measured.
 Each row records the configuration, exact token counts, TTFT, TPOT, throughput,
 sampled peak working set, committed private memory (after load, warm-up and
 generation, plus lifetime peak), and machine state just before the run (available
-RAM, system CPU busy %). Use committed memory, not working set, for OOM analysis:
+RAM, system CPU busy %), plus CPU behaviour *during* the run: effective CPU
+frequency (`% Processor Performance` x base MHz), this process's CPU share, and
+background CPU share. Use committed memory, not working set, for OOM analysis:
 a pre-allocated KV cache is committed but never shows up in the working set
 (FINDINGS.md, Finding 9). Load and warm-up failures (e.g. out of memory) are written as
 rows with `status` `load_failed` / `warmup_failed`; `orbit_exec.py` adds a

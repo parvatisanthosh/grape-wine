@@ -365,3 +365,117 @@ P/E-cores. Neither is measured yet.
 - (b) Record CPU frequency or temperature, and CPU load *during* the run, before training
   the Twin.
 - (c) The P-core experiment (week 5) may reduce the variance as well as the mean.
+
+---
+
+## Phase 5 — Device and CPU core placement (`plans/device_cores.json`, `gpu_fp16.json`, `load_time.json`)
+
+Method: same as Phase 4 (2 shuffled rounds × 3 runs, n = 6 per configuration), 64 output
+tokens, unique prompts. `orbit_run` now also records CPU behaviour *during* each run:
+effective MHz, own CPU share and background CPU share. 216 measured runs plus 12
+load-time invocations, 0 failures, 49 minutes.
+
+Variants:
+
+| Variant | Settings |
+|---|---|
+| `cpu_auto` | OpenVINO default (all 12 threads, any core) |
+| `cpu_pcore` | `SCHEDULING_CORE_TYPE = PCORE_ONLY` |
+| `cpu_ecore` | `SCHEDULING_CORE_TYPE = ECORE_ONLY` |
+| `cpu_4t`, `cpu_8t` | `INFERENCE_NUM_THREADS` = 4 or 8 |
+| `gpu` | Intel Iris Xe iGPU |
+
+### Finding 11 — The iGPU wins every per-request metric, by a wide margin
+
+Medians, n = 6:
+
+| Model | Prompt | Best CPU TTFT | GPU TTFT | Best CPU TPOT | GPU TPOT | GPU decode tok/s |
+|---|---|---|---|---|---|---|
+| INT4 | 128 | 969 ms (8t) | **315 ms** | 38.2 ms (P-core) | **26.6 ms** | 37.5 |
+| INT4 | 1024 | 9011 ms (E-core) | **1740 ms** | 46.9 ms (P-core) | **28.2 ms** | 35.5 |
+| INT8 | 128 | 1013 ms (P-core) | **291 ms** | 58.6 ms (P-core) | **40.5 ms** | 24.7 |
+| INT8 | 1024 | 7999 ms (8t) | **1804 ms** | 52.1 ms (P-core) | **37.7 ms** | 26.6 |
+| FP16 | 128 | 3420 ms (auto) | **225 ms** | 123.1 ms (auto) | **48.4 ms** | 20.7 |
+| FP16 | 1024 | 27285 ms (auto) | **2358 ms** | 171.1 ms (auto) | **49.7 ms** | 20.1 |
+
+- **Prefill:** the GPU is 3–5× faster than the *best* CPU configuration for INT4/INT8, and
+  12× faster than the CPU for FP16 at 1024 tokens.
+- **Decode:** the GPU is 1.4× faster than the *best* CPU configuration (P-cores).
+- **FP16 benefits most.** The iGPU has native FP16; the CPU has to compute in f32
+  (Open question 1). FP16 on the GPU decodes at 20 tok/s, against 6–8 tok/s on the CPU,
+  and uses 2.5 GB RSS instead of 4.1 GB.
+- **The GPU is much more stable.** INT4 at 1024 tokens: GPU TTFT ranged 1470–1772 ms
+  (±10%), CPU default 7171–14398 ms (2×). Moving work off the contended CPU removes most of
+  the session noise from Findings 5 and 10.
+- **Caveat on GPU memory:** process RSS is *lower* on the GPU (INT4 1080 MiB vs 1307 MiB),
+  but iGPU buffers live in shared system memory and may not all be attributed to the
+  process working set. GPU memory needs a separate measurement before any memory claim is
+  made.
+
+### Finding 12 — On the hybrid CPU, the OpenVINO default is never the best configuration
+
+Two P-cores only (`cpu_pcore`) beat the 12-thread default on decode in all four cells:
+
+| Model | Prompt | TPOT, default | TPOT, P-core only | Change |
+|---|---|---|---|---|
+| INT4 | 128 | 63.4 ms | 38.2 ms | −40% |
+| INT4 | 1024 | 60.5 ms | 46.9 ms | −22% |
+| INT8 | 128 | 69.4 ms | 58.6 ms | −16% |
+| INT8 | 1024 | 84.3 ms | 52.1 ms | −38% |
+
+- `cpu_pcore` used only ~15% of total CPU time (≈ 2 of 12 logical processors) and was
+  still the fastest decoder.
+- Likely mechanism (hypothesis): decode is memory-bandwidth-bound, and each layer's work
+  is split across threads. With E-cores in the pool, every step waits for the slowest
+  (E-core) thread to finish its share — a straggler effect. More threads add
+  synchronization cost without adding bandwidth.
+- **Prefill is different.** More threads help this compute-bound phase: 8 threads gave the
+  best INT8 TTFT at 1024 tokens and the best INT4 TTFT at 128 tokens. **The best CPU
+  thread placement differs between prefill and decode.** This is concrete evidence for the
+  plan's phase-aware research question. Within one request, OpenVINO compiles one thread
+  configuration, so exploiting it would need two compiled models or a per-phase switch.
+  That is a design question for the controller.
+
+### Finding 13 — The model cache helps the GPU and hurts the CPU
+
+Pipeline construction time, INT4, 3 rounds. Round 1 of a cached variant populates the cache.
+
+| Variant | Round 1 | Round 2 | Round 3 |
+|---|---|---|---|
+| CPU, no cache | 2.3 s | 2.0 s | 2.4 s |
+| CPU, `cache_dir` | 10.8 s | 13.2 s | 10.5 s |
+| GPU, no cache | 7.6 s | 8.0 s | 9.2 s |
+| GPU, `cache_dir` | 20.8 s *(cold)* | **2.1 s** | **2.8 s** |
+
+- **GPU:** without a cache, every load recompiles kernels, which took 6–11 s in
+  `device_cores` and 14–19 s for FP16. With a warm cache, load drops to 2–3 s, about the
+  same as the CPU. Populating the cache costs one slow load of ~21 s.
+- **CPU:** the cache makes every load ~5× *slower*, even when warm (10–13 s vs 2–2.4 s).
+  The likely reason is that the cached blob is read in full instead of memory-mapping the
+  IR. Not verified.
+- **Rule:** enable `cache_dir` for GPU, never for CPU.
+
+### Finding 14 — What this means for ORBIT-LLM's decision problem
+
+On this laptop, for steady-state generation, **GPU + INT4 dominates**: fastest TTFT,
+fastest decode, lowest variance. A controller that always picked it would be
+near-optimal per request. The real decisions are therefore around it:
+
+1. **Cold start vs request size.** Example: one request with a 128-token prompt and
+   64 output tokens. Single-run numbers, so approximate.
+
+   | Path | Load | + TTFT | + decode | ≈ Total |
+   |---|---|---|---|---|
+   | CPU (P-cores) | ~1.4–3.7 s | 1.0 s | 64 × 38 ms = 2.4 s | 5–7 s |
+   | GPU, no cache | 6–11 s | 0.3 s | 1.7 s | 8–13 s |
+   | GPU, warm cache | 2–3 s | 0.3 s | 1.7 s | 4–5 s |
+
+   Whether the GPU is worth it depends on cache state and how much work follows. That is
+   exactly a predict-then-choose problem.
+2. **Phase-aware CPU threads** (Finding 12), when the GPU is unavailable or busy.
+3. **Prefix reuse** (Finding 8), the largest single TTFT effect: ~177×.
+4. **Memory and OOM limits** (Finding 9), which will start to bind with a 3B model.
+
+**Next:** a 3B model is now the most important addition. It makes KV-cache and memory
+decisions real, and tests whether "GPU always wins" survives a model 3× larger in a
+GPU that shares system memory.

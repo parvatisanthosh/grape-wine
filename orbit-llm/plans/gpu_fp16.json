@@ -1,0 +1,24 @@
+{
+  "name": "gpu_fp16",
+  "description": "Phase 5b: FP16 weights on CPU (computed in f32, no native FP16) vs iGPU (native FP16).",
+  "models": {
+    "FP16": "C:/Users/parva/tinyllama-ov"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "variants": {
+    "cpu_auto": {},
+    "gpu": {"device": "GPU"}
+  },
+  "grid": {
+    "label": ["FP16"],
+    "prompt_tokens": [128, 1024]
+  },
+  "rounds": 2,
+  "seed": 8,
+  "cooldown_seconds": 3
+}

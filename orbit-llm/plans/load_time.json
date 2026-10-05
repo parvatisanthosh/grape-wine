@@ -1,0 +1,26 @@
+{
+  "name": "load_time",
+  "description": "Phase 5c: pipeline load time with and without the compiled-model cache (ov::cache_dir). Round 1 of each cached variant populates the cache (cold); later rounds load from it (warm). Run with an empty ov_cache/ directory.",
+  "models": {
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "prompt_tokens": 32,
+    "output_tokens": 8,
+    "warmup": 1,
+    "runs": 1,
+    "prompt_mode": "cold"
+  },
+  "variants": {
+    "cpu_nocache": {},
+    "cpu_cache": {"cache_dir": "ov_cache/cpu"},
+    "gpu_nocache": {"device": "GPU"},
+    "gpu_cache": {"device": "GPU", "cache_dir": "ov_cache/gpu"}
+  },
+  "grid": {
+    "label": ["INT4"]
+  },
+  "rounds": 3,
+  "seed": 9,
+  "cooldown_seconds": 3
+}
