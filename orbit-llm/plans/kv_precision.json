@@ -1,0 +1,22 @@
+{
+  "name": "kv_precision",
+  "description": "Phase 4a: KV-cache element type vs memory and speed across context length. CPU default is u8 (verified via Core.get_property).",
+  "models": {
+    "INT8": "C:/Users/parva/tinyllama-int8",
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "grid": {
+    "label": ["INT8", "INT4"],
+    "kv_precision": ["u8", "f16", "f32"],
+    "prompt_tokens": [256, 1024, 1920]
+  },
+  "rounds": 2,
+  "seed": 4,
+  "cooldown_seconds": 3
+}

@@ -1,0 +1,22 @@
+{
+  "name": "prefix_cache",
+  "description": "Phase 4b: prefix caching on/off for repeated vs unique prompts. Quantifies the effect found in Phase 3, Finding 1.",
+  "models": {
+    "INT8": "C:/Users/parva/tinyllama-int8",
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "output_tokens": 32,
+    "warmup": 1,
+    "runs": 3
+  },
+  "grid": {
+    "label": ["INT8", "INT4"],
+    "prompt_mode": ["cold", "repeat"],
+    "prefix_caching": ["on", "off"],
+    "prompt_tokens": [512, 1920]
+  },
+  "rounds": 2,
+  "seed": 5,
+  "cooldown_seconds": 3
+}
