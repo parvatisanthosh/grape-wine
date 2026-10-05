@@ -1,0 +1,4 @@
+timestamp,precision,model_path,device,iteration,prompt_id,requested_input_tokens,actual_input_tokens,requested_output_tokens,actual_output_tokens,pipeline_construction_ms,wall_time_ms,openvino_generation_ms,ttft_ms,tpot_ms_per_token,throughput_tokens_per_second,rss_before_load_mib,rss_after_load_mib,rss_after_warmup_mib,sampled_peak_rss_mib,rss_after_generation_mib,status,error
+2026-10-05T13:11:14,INT4,C:\Users\parva\tinyllama-int4,CPU,1,run_1,512,512,128,128,2874.92,10219.93,10219.85,3960.0,49.29,20.29,54.3,276.3,1402.3,1403.5,1403.5,success,
+2026-10-05T13:11:24,INT4,C:\Users\parva\tinyllama-int4,CPU,2,run_2,512,512,128,128,2874.92,12911.37,12911.31,5362.53,59.44,16.82,54.3,276.3,1402.3,1403.9,1403.9,success,
+2026-10-05T13:11:37,INT4,C:\Users\parva\tinyllama-int4,CPU,3,run_3,512,512,128,128,2874.92,9697.77,9697.67,3533.19,48.54,20.6,54.3,276.3,1402.3,1404.0,1404.0,success,
