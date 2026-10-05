@@ -215,6 +215,23 @@ double get_lifetime_peak_rss_mib() {
     return bytes_to_mib(counters.PeakWorkingSetSize);
 }
 
+// Committed private memory. Unlike the working set, this includes memory that
+// has been allocated but not yet touched (e.g. a pre-allocated KV cache), and it
+// is what counts against the system commit limit when predicting OOM.
+double get_commit_mib() {
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    GetProcessMemoryInfo(GetCurrentProcess(),
+                         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                         sizeof(counters));
+    return bytes_to_mib(counters.PrivateUsage);
+}
+
+double get_lifetime_peak_commit_mib() {
+    PROCESS_MEMORY_COUNTERS counters{};
+    GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
+    return bytes_to_mib(counters.PeakPagefileUsage);
+}
+
 double get_available_ram_mib() {
     MEMORYSTATUSEX status{};
     status.dwLength = sizeof(status);
@@ -524,6 +541,7 @@ int main(int argc, char* argv[]) {
 
         base.set("pipeline_construction_ms", construction_ms);
         base.set("rss_after_load_mib", get_rss_mib(), 1);
+        base.set("commit_after_load_mib", get_commit_mib(), 1);
 
         auto tokenizer = pipeline->get_tokenizer();
         for (int iteration = 0; iteration <= options.runs; ++iteration) {
@@ -540,6 +558,7 @@ int main(int argc, char* argv[]) {
         base.set("status", "load_failed");
         base.set("error", error.what());
         base.set("lifetime_peak_rss_mib", get_lifetime_peak_rss_mib(), 1);
+        base.set("lifetime_peak_commit_mib", get_lifetime_peak_commit_mib(), 1);
         emit_row(base, options);
         std::cerr << "LOAD FAILED: " << error.what() << "\n";
         return 1;
@@ -561,11 +580,13 @@ int main(int argc, char* argv[]) {
         base.set("status", "warmup_failed");
         base.set("error", error.what());
         base.set("lifetime_peak_rss_mib", get_lifetime_peak_rss_mib(), 1);
+        base.set("lifetime_peak_commit_mib", get_lifetime_peak_commit_mib(), 1);
         emit_row(base, options);
         std::cerr << "WARM-UP FAILED: " << error.what() << "\n";
         return 1;
     }
     base.set("rss_after_warmup_mib", get_rss_mib(), 1);
+    base.set("commit_after_warmup_mib", get_commit_mib(), 1);
 
     int failed_runs = 0;
 
@@ -625,6 +646,8 @@ int main(int argc, char* argv[]) {
         row.set("sampled_peak_rss_mib", peak_rss, 1);
         row.set("rss_after_generation_mib", get_rss_mib(), 1);
         row.set("lifetime_peak_rss_mib", get_lifetime_peak_rss_mib(), 1);
+        row.set("commit_after_generation_mib", get_commit_mib(), 1);
+        row.set("lifetime_peak_commit_mib", get_lifetime_peak_commit_mib(), 1);
         emit_row(row, options);
 
         if (succeeded) {
