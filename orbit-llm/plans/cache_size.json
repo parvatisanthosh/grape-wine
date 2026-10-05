@@ -1,0 +1,21 @@
+{
+  "name": "cache_size",
+  "description": "Phase 4c: pre-allocated KV-cache size (0 = grow dynamically) vs memory footprint and speed. Input for the memory/OOM side of the Performance Twin.",
+  "models": {
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "grid": {
+    "label": ["INT4"],
+    "cache_size_gb": [0, 1, 2, 4],
+    "prompt_tokens": [512, 1920]
+  },
+  "rounds": 2,
+  "seed": 6,
+  "cooldown_seconds": 3
+}

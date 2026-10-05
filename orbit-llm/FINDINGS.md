@@ -156,10 +156,16 @@ before every measured run, so noisy runs can be identified instead of guessed at
 ### Open questions
 
 1. **RSS is about 2× the on-disk size for every precision:** FP16 4.15 GB vs 2.10 GB,
-   INT8 2.13 GB vs 1.05 GB, INT4 1.34 GB vs 0.62 GB. Since this holds even for INT8 and
-   INT4, it is probably not FP16→FP32 up-conversion. More likely the IR is resident twice:
-   the memory-mapped model file plus the compiled model's own weight copy. To test: load
-   with `ov::enable_mmap(false)` and compare.
+   INT8 2.13 GB vs 1.05 GB, INT4 1.34 GB vs 0.62 GB.
+   - **FP16 — explained.** The CPU plugin on this machine reports
+     `INFERENCE_PRECISION_HINT = f32` and capabilities `FP32, INT8`: there is no native
+     FP16 or BF16 compute on the i5-1335U. FP16 weights are therefore converted to f32 at
+     compile time. 1.1B parameters × 4 bytes ≈ 4.1 GiB, which matches the measured RSS. On
+     this CPU, the "FP16" baseline is really *f32 compute*.
+   - **INT8 and INT4 — still open.** Compressed weights stay compressed, so 2× is not
+     up-conversion. One candidate is double residency: the memory-mapped IR plus the
+     compiled model's repacked copy. To test: load with `ov::enable_mmap(false)` and
+     compare.
 2. **Prefill is slow even for INT8** (138 tok/s). Does it improve with P-cores only, or a
    different thread count? Early `orbit_run` checks suggest P-core-only may beat the
    12-thread default on this hybrid CPU.
