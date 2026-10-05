@@ -162,10 +162,11 @@ before every measured run, so noisy runs can be identified instead of guessed at
      FP16 or BF16 compute on the i5-1335U. FP16 weights are therefore converted to f32 at
      compile time. 1.1B parameters × 4 bytes ≈ 4.1 GiB, which matches the measured RSS. On
      this CPU, the "FP16" baseline is really *f32 compute*.
-   - **INT8 and INT4 — still open.** Compressed weights stay compressed, so 2× is not
-     up-conversion. One candidate is double residency: the memory-mapped IR plus the
-     compiled model's repacked copy. To test: load with `ov::enable_mmap(false)` and
-     compare.
+   - **INT8 and INT4 — explained in Phase 4 (Finding 9).** Committed private memory
+     after warm-up is only 850 MiB for INT4, while the working set is 1350 MiB. The
+     ~500 MiB difference is the memory-mapped IR file, which the working set counts and
+     the commit charge does not. The weights are resident twice: once as the mapped file,
+     once as the compiled model's private copy.
 2. **Prefill is slow even for INT8** (138 tok/s). Does it improve with P-cores only, or a
    different thread count? Early `orbit_run` checks suggest P-core-only may beat the
    12-thread default on this hybrid CPU.
@@ -237,3 +238,130 @@ this machine's free-RAM limit, so it is the most sensitive.
    discard. Predicting performance under a given machine state is exactly the twin's job.
 4. Pause OneDrive sync before benchmarking. The project folder is synced, and the sync
    client used ~16% CPU while results were being written.
+
+---
+
+## Phase 4 — KV cache and memory (`plans/kv_precision.json`, `prefix_cache.json`, `cache_size.json`)
+
+Method: `run_experiment.py`, all through `orbit_run`. Each plan runs 2 rounds in shuffled
+order, with 3 measured runs per round, so n = 6 per configuration. 252 measured runs, 0
+failures, 69 minutes in total. Raw rows are in `results/experiments/*.jsonl`; summaries
+are in the matching `*_summary.csv`. Background CPU before runs: median 25%, range 9–76%.
+
+**Defaults verified on this machine** (`Core.get_property("CPU", …)`):
+`KV_CACHE_PRECISION = u8`, `INFERENCE_PRECISION_HINT = f32`, `INFERENCE_NUM_THREADS = 0`
+(auto), `SCHEDULING_CORE_TYPE = ANY_CORE`. OpenVINO already quantizes the KV cache to
+8 bits by default on this CPU.
+
+**Expected KV size** for TinyLlama (22 layers, 4 KV heads, head dim 64):
+2 × 22 × 4 × 64 = 11,264 values per token. That is 11.0 KiB at u8, 22.0 KiB at f16 and
+44.0 KiB at f32. At 1920 tokens: 21 / 41 / 83 MiB.
+
+### Finding 6 — KV precision behaves exactly as theory predicts, but barely matters at 1.1B
+
+Peak RSS growth from 256 to 1920 prompt tokens (+1664 tokens), median of 6 runs:
+
+| KV type | INT4 | INT8 | Extra vs u8 (measured) | Extra vs u8 (theory) |
+|---|---|---|---|---|
+| u8 (default) | +222.6 MiB | +223.3 MiB | — | — |
+| f16 | +237.9 MiB | +236.5 MiB | +14 MiB | +17.9 MiB |
+| f32 | +272.8 MiB | +273.0 MiB | +50 MiB | +53.6 MiB |
+
+- The *differences* between KV types match the theoretical KV sizes within a few MiB,
+  for both weight precisions.
+- **Speed:** TTFT shows no consistent effect. At 1920 tokens, INT4 TPOT was 56.5 ms with
+  u8, 50.0 ms with f16 and 46.5 ms with f32. That suggests dequantizing the KV cache costs
+  some decode time at long context, but the ranges overlap and INT8 shows no such trend.
+  Weak signal.
+- **Conclusion for a 1.1B model:** at its full 2k context, the KV cache is 21–83 MiB,
+  against ~1.3–2.1 GB of weights. KV precision is not a meaningful lever here. It becomes
+  one for larger models and longer contexts. For example, a 3B model with 8 KV heads ×
+  head dim 128 needs ≈ 112 KiB per token at f16, so 8k tokens is about 0.9 GiB. **Phase 5
+  should add a 3B model.**
+
+### Finding 7 — Memory growth with prompt length is ~12× larger than the KV cache
+
+Total growth is **0.134 MiB per prompt token**, while the u8 KV cache accounts for only
+0.011 MiB per token.
+
+Hypothesis: the paged-attention path computes **full-vocabulary logits for every prompt
+token** during prefill. 32,000 vocab × 4 bytes = 0.122 MiB per token; adding the
+0.011 MiB of KV gives 0.133 MiB per token, against 0.134 measured. The arithmetic fits
+closely, but it is not yet confirmed from the source or a profiler.
+
+The SDPA backend grows even more: +462 MiB RSS from 256 to 1920 tokens, against +222 MiB
+for PA (n = 1 each). Its TTFT is also 69% higher at 1920 tokens (24.4 s vs 14.4 s).
+32 heads × 1920² × 4 bytes = 450 MiB, which suggests SDPA materializes the full
+attention-score matrix while PA does not. Also a hypothesis.
+
+**Why it matters:** for memory prediction, prompt length has a much larger effect than the
+KV cache does on this model. A memory model for the Twin should be
+`weights + a × prompt_tokens + kv_bytes × (prompt + output tokens)`, with `a` measured
+per backend.
+
+### Finding 8 — Prefix caching: ~177× faster TTFT on repeated prompts, no cost otherwise
+
+| Model | Prompt | TTFT, repeated, caching **on** | TTFT, repeated, caching off | TTFT, unique, on | TTFT, unique, off |
+|---|---|---|---|---|---|
+| INT4 | 512 | **69 ms** | 4939 ms | 3407 ms | 3507 ms |
+| INT4 | 1920 | **77 ms** | 12949 ms | 13750 ms | 13585 ms |
+| INT8 | 512 | **60 ms** | 2643 ms | 4529 ms | 3386 ms |
+| INT8 | 1920 | **72 ms** | 12737 ms | 12732 ms | 18955 ms |
+
+- With caching on, TTFT on a repeated prompt is almost independent of length: 60–77 ms
+  for both 512 and 1920 tokens. Only the newly generated tokens need computing.
+- For unique prompts, on and off are within noise of each other, and peak memory is
+  identical. Leaving prefix caching on, which is the `LLMPipeline` default, costs nothing
+  measurable for a single user.
+- Noisy cells: INT8 unique/off at 1920 tokens ranged 11.4–25.4 s, and INT8 unique/on at
+  512 tokens ranged 2.6–6.6 s. Both are session noise, not configuration effects.
+- **For ORBIT-LLM:** "does this request share a prefix with a recent one?" is the single
+  strongest TTFT predictor found so far. Chat follow-ups and repeated system prompts get
+  this effect for free. The Workload Profiler should detect it.
+
+### Finding 9 — Working-set memory hides real memory commitments
+
+`cache_size_gb` pre-allocates the KV cache. In the main experiment it changed peak
+**working set** by only +20–56 MiB, even at 4 GB. After adding committed private memory
+(`PrivateUsage`) to `orbit_run`, a follow-up check (INT4, 512 tokens, n = 1 each) showed:
+
+| `cache_size_gb` | Working set after warm-up | Committed after warm-up | Peak committed |
+|---|---|---|---|
+| 0 (dynamic) | 1350 MiB | 850 MiB | 851 MiB |
+| 2 | 1352 MiB | 2892 MiB (+2042) | **4323 MiB** |
+| 4 | 1355 MiB | 4948 MiB (+4098) | **8431 MiB** |
+
+- The pre-allocated cache *is* committed in full (+2.0 / +4.0 GiB), but its pages are not
+  touched, so the working set never shows it.
+- **Peak** committed memory reaches ≈ 2× the cache size during initialization. A 4 GB
+  cache transiently commits about 7.6 GB extra.
+- The same measurement explains the INT8/INT4 "2× disk size" question (Open question 1):
+  working set = private memory + the memory-mapped IR file.
+
+**Consequence for the Performance Twin:** OOM risk must be predicted from **committed
+memory against the system commit limit**, not from working set. All new `orbit_run`
+rows record `commit_after_load_mib`, `commit_after_warmup_mib`,
+`commit_after_generation_mib` and `lifetime_peak_commit_mib`. The Phase 4 experiment rows
+predate this field.
+
+### Finding 10 — How much of the noise does machine state explain?
+
+Each run's deviation from its configuration's median was correlated with the machine
+state recorded just before it (all 252 Phase 4 runs):
+
+| Metric | Typical spread (p10–p90 of run / median) | r with background CPU % | r with free RAM |
+|---|---|---|---|
+| TTFT | 0.78 – 1.23 | 0.25 | −0.05 |
+| TPOT | 0.89 – 1.12 | 0.13 | 0.01 |
+
+Background CPU load explains only a small part of the variance. Free RAM explains none of
+it on these sizes, which never came near the limit. The remaining noise is probably
+thermal and power-limit behaviour of a 15 W CPU, plus thread placement on hybrid
+P/E-cores. Neither is measured yet.
+
+**Implications:**
+- (a) Expect a TTFT prediction-error floor of roughly ±20% on this laptop. Evaluate the
+  Twin against that floor, not against zero.
+- (b) Record CPU frequency or temperature, and CPU load *during* the run, before training
+  the Twin.
+- (c) The P-core experiment (week 5) may reduce the variance as well as the mean.

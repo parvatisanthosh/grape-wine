@@ -48,7 +48,10 @@ caching, silently changing what is being measured.
 ## Output
 
 Each row records the configuration, exact token counts, TTFT, TPOT, throughput,
-sampled peak working set, and machine state just before the run (available RAM,
-system CPU busy %). Load and warm-up failures (e.g. out of memory) are written as
+sampled peak working set, committed private memory (after load, warm-up and
+generation, plus lifetime peak), and machine state just before the run (available
+RAM, system CPU busy %). Use committed memory, not working set, for OOM analysis:
+a pre-allocated KV cache is committed but never shows up in the working set
+(FINDINGS.md, Finding 9). Load and warm-up failures (e.g. out of memory) are written as
 rows with `status` `load_failed` / `warmup_failed`; `orbit_exec.py` adds a
 `crashed` row if the process dies without writing anything.
