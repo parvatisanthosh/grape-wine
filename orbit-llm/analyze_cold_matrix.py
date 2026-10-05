@@ -1,4 +1,5 @@
-﻿import csv
+﻿import argparse
+import csv
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -280,14 +281,36 @@ def print_quantization_comparison(rows):
         )
 
 
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Summarize a cold-prompt workload matrix."
+    )
+
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=INPUT_CSV,
+    )
+
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        default=SUMMARY_CSV,
+    )
+
+    return parser.parse_args()
+
+
 def main():
-    if not INPUT_CSV.exists():
+    args = get_arguments()
+
+    if not args.input.exists():
         raise FileNotFoundError(
-            f"Input CSV not found: {INPUT_CSV}"
+            f"Input CSV not found: {args.input}"
         )
 
     grouped_rows = load_successful_rows(
-        INPUT_CSV
+        args.input
     )
 
     if len(grouped_rows) != 18:
@@ -313,7 +336,7 @@ def main():
 
     save_summary(
         ordered_rows,
-        SUMMARY_CSV,
+        args.summary,
     )
 
     print_performance_table(
@@ -326,7 +349,7 @@ def main():
 
     print(
         f"\nSummary CSV saved to: "
-        f"{SUMMARY_CSV.resolve()}"
+        f"{args.summary.resolve()}"
     )
 
 
