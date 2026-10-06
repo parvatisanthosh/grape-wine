@@ -294,6 +294,10 @@ for PA (n = 1 each). Its TTFT is also 69% higher at 1920 tokens (24.4 s vs 14.4 
 32 heads × 1920² × 4 bytes = 450 MiB, which suggests SDPA materializes the full
 attention-score matrix while PA does not. Also a hypothesis.
 
+> **Status: logits hypothesis refuted (Finding 16).** It predicted ~0.60 MiB/token for
+> Qwen2.5-3B, with its 151,936-token vocabulary. The measured growth was 0.23 MiB/token.
+> The growth tracks MLP activation size instead. See Finding 16.
+
 **Why it matters:** for memory prediction, prompt length has a much larger effect than the
 KV cache does on this model. A memory model for the Twin should be
 `weights + a × prompt_tokens + kv_bytes × (prompt + output tokens)`, with `a` measured
@@ -479,3 +483,117 @@ near-optimal per request. The real decisions are therefore around it:
 **Next:** a 3B model is now the most important addition. It makes KV-cache and memory
 decisions real, and tests whether "GPU always wins" survives a model 3× larger in a
 GPU that shares system memory.
+
+---
+
+## Layer 1 — Performance Twin v0 (`build_dataset.py`, `twin_v0.py`)
+
+**Dataset.** `build_dataset.py` merges every successful C++-executor run into
+`results/dataset.csv`: 504 runs over 85 distinct configuration+workload combinations.
+
+Features use only what a controller knows *before* running a request:
+
+| Feature group | Columns |
+|---|---|
+| Configuration | precision, device, backend, cores, threads, KV precision, prefix caching, cache size |
+| Workload | prompt tokens, output tokens, prefix-cache hit |
+| Machine state | background CPU %, available RAM — measured just before the run |
+
+Targets: TTFT, TPOT and peak RSS.
+
+**Predictors.**
+
+- **analytical** — four physical laws from the findings, fitted per hardware placement by
+  least squares:
+  - TTFT ∝ prompt tokens
+  - cache-hit TTFT ≈ constant
+  - TPOT ≈ linear in context
+  - memory ≈ linear in tokens
+
+  Groups fall back to coarser ones when a configuration is unseen.
+- **gbm** — gradient-boosted trees (`HistGradientBoostingRegressor`) on log targets.
+
+**Evaluation.** 5-fold `GroupKFold` holding out *whole configurations*, so every
+prediction is for a configuration+workload the model never saw. The **noise floor**
+predicts each run from the median of the *other* runs of the same configuration — the
+best any predictor could do without knowing the run's own noise.
+
+### Finding 15 — Simple physical laws predict as well as ML, close to the noise floor
+
+| Target | Predictor | Mean APE | Median APE | Within ±20% |
+|---|---|---|---|---|
+| TTFT | noise floor | 19.3% | 11.7% | 65.9% |
+| | **analytical** | 23.5% | 15.7% | 57.7% |
+| | gbm | 29.0% | 15.5% | 59.9% |
+| | gbm, no machine state | 33.1% | 21.3% | 47.0% |
+| TPOT | noise floor | 13.7% | 8.4% | 76.2% |
+| | analytical | 15.4% | 11.2% | 71.0% |
+| | **gbm** | 15.0% | 10.3% | 75.8% |
+| Peak RSS | noise floor | 0.4% | 0.0% | 100% |
+| | **analytical** | 1.1% | 0.3% | 100% |
+| | gbm | 3.3% | 0.5% | 94.0% |
+
+- **Both predictors are within ~4 percentage points of the noise floor** on TTFT and TPOT
+  median error, and memory is predicted almost exactly. Most of the remaining error is
+  run-to-run noise that no pre-run predictor can see.
+- **The analytical model matches the ML model.** On this data, what matters is getting
+  the physics right: proportional prefill, constant cache-hit TTFT. Model capacity adds
+  little. That is a useful, honest result: the Twin is explainable.
+- **Machine state helps the ML model's TTFT predictions:** within ±20% rises from 47% to
+  60% of runs when background CPU and free RAM are included.
+- **A bug found by evaluation.** The first analytical version predicted a flat TTFT when a
+  held-out configuration's group had been seen at only one prompt length, giving 10×
+  errors (mean APE 115%). Assuming TTFT ∝ prompt length in that case fixed it.
+- **Weak spots:** GPU FP16 (median APE 40–47%, little GPU data) and very short prompts
+  (`load_time`: 32 tokens, 61–68%). More GPU and short-prompt data are needed.
+
+---
+
+## Phase 6 — 3B model (Qwen2.5-Coder-3B-Instruct, INT4)
+
+Pre-converted IR from `huggingface.co/OpenVINO/Qwen2.5-Coder-3B-Instruct-int4-ov`
+(1.8 GB, Apache-2.0); there was not enough RAM or disk to export it locally. Architecture:
+36 layers, 16 attention heads, 2 KV heads, head dim 128, hidden 2048, MLP 11008, vocab
+151,936, 32k context.
+
+**Tooling fix:** Qwen's exported tokenizer ignores `max_length`/`truncation`. `orbit_run`
+now encodes the full text and slices the token tensor to the exact length, which gives
+identical results for TinyLlama.
+
+### Finding 16 — First 3B results, and a refuted hypothesis
+
+Single runs, INT4, 32 output tokens, about 1.3–2.4 GB of RAM free:
+
+| | CPU, 256 tokens | CPU, 1920 tokens | GPU, 256 tokens | GPU, 1920 tokens |
+|---|---|---|---|---|
+| TTFT | 6.0 s | **50.4 s** | 0.97 s | 9.6 s |
+| TPOT | 127 ms (7.9 tok/s) | 159 ms | 58 ms (17 tok/s) | 106 ms |
+| Peak RSS | 3841 MiB | 4222 MiB | 2545 MiB | 2676 MiB |
+| Committed after warm-up | 2235 MiB | 2616 MiB | 2461 MiB | 2595 MiB |
+
+- **On CPU, a 3B model is borderline-unusable for long prompts.** A 1920-token prompt
+  takes 50 s to first token. The GPU is 5–6× faster on TTFT and 1.5–2.2× faster on decode.
+- **Memory is tight.** CPU peak RSS reached 4.2 GB while the system had only 1.3 GB free.
+  This is the first model where OOM risk is a live constraint on this laptop.
+- **Finding 7's logits hypothesis is refuted** by a prediction made before running.
+  Full-vocabulary logits per prompt token would cost 151,936 × 4 B = 0.58 MiB per token,
+  for ~990 MiB growth from 256 to 1920 tokens. The measurement was **382 MiB**
+  (0.23 MiB per token).
+- **Better hypothesis: MLP activation buffers.** Remove the KV share (u8: 0.011 MiB per
+  token for TinyLlama, 0.018 for Qwen) and compare the rest with
+  `(hidden + 2 × MLP) × 4 B`:
+
+  | Model | Non-KV growth | `(hidden + 2 × MLP) × 4 B` | Ratio |
+  |---|---|---|---|
+  | TinyLlama (MLP 5632) | 0.123 MiB | 0.051 MiB | 2.4× |
+  | Qwen2.5-3B (MLP 11008) | 0.21 MiB | 0.092 MiB | 2.3× |
+
+  The constant ratio across two architectures suggests prefill memory is dominated by a
+  few live intermediate buffers of size `prompt_tokens × (hidden + 2 × MLP)` in f32. Still
+  a hypothesis, but it now predicts both models, and it gives the Twin a memory feature
+  derived from architecture.
+
+**Next for Phase 6:** a proper 3B plan (n = 6, shuffled), run with as much free RAM as
+possible. Planned dimensions: GPU vs CPU P-cores, KV precision at long context, and
+prefix caching. GPU memory needs its own measurement, because process RSS under-counts
+iGPU buffers.

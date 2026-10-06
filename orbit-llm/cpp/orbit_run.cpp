@@ -553,17 +553,27 @@ ov::genai::TokenizedInputs create_exact_token_input(ov::genai::Tokenizer& tokeni
         text += body;
     }
 
-    auto tokenized = tokenizer.encode(text,
-                                      {ov::genai::add_special_tokens(true),
-                                       ov::genai::max_length(target_tokens),
-                                       ov::genai::truncation(true)});
+    // Not every exported tokenizer honours max_length/truncation (Qwen2.5's
+    // does not), so encode everything and keep the first target_tokens ids.
+    // For tokenizers that do truncate, this gives the identical result.
+    const auto tokenized = tokenizer.encode(text, {ov::genai::add_special_tokens(true)});
 
-    const std::size_t actual_tokens = tokenized.input_ids.get_shape().at(1);
-    if (actual_tokens != target_tokens) {
+    const std::size_t available_tokens = tokenized.input_ids.get_shape().at(1);
+    if (available_tokens < target_tokens) {
         throw std::runtime_error(prompt_id + ": requested " + std::to_string(target_tokens) +
-                                 " tokens, but tokenizer produced " + std::to_string(actual_tokens));
+                                 " tokens, but text only produced " + std::to_string(available_tokens));
     }
-    return tokenized;
+    if (tokenized.input_ids.get_element_type() != ov::element::i64) {
+        throw std::runtime_error("Expected i64 input_ids from the tokenizer");
+    }
+
+    ov::Tensor input_ids(ov::element::i64, {1, target_tokens});
+    std::copy_n(tokenized.input_ids.data<const std::int64_t>(), target_tokens, input_ids.data<std::int64_t>());
+
+    ov::Tensor attention_mask(ov::element::i64, {1, target_tokens});
+    std::fill_n(attention_mask.data<std::int64_t>(), target_tokens, std::int64_t{1});
+
+    return ov::genai::TokenizedInputs{input_ids, attention_mask};
 }
 
 std::string prompt_id_for(const Options& options, int iteration) {
