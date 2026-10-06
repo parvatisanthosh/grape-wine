@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(orbit_run LANGUAGES CXX)
+project(orbit_llm LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,12 +14,16 @@ find_package(OpenVINOGenAI REQUIRED
     PATHS "${OPENVINO_GENAI_BUILD_DIR}"
     NO_DEFAULT_PATH)
 
-add_executable(orbit_run orbit_run.cpp)
-
+add_executable(orbit_run orbit_run.cpp telemetry.hpp)
 target_link_libraries(orbit_run PRIVATE openvino::genai psapi pdh advapi32)
+
+# Interactive local chat application (the deployment).
+add_executable(orbit_chat orbit_chat.cpp telemetry.hpp)
+target_link_libraries(orbit_chat PRIVATE openvino::genai psapi)
 
 if(MSVC)
     target_compile_options(orbit_run PRIVATE /W4 /utf-8)
+    target_compile_options(orbit_chat PRIVATE /W4 /utf-8)
 endif()
 
 # Put the GenAI and tokenizers DLLs next to the executable.

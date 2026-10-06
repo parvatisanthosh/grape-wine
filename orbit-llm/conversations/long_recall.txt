@@ -1,0 +1,16 @@
+# KV-cache eviction study: a long conversation with a recall probe.
+# Turn 1 states two facts. Turns 2-11 are unrelated and push the conversation
+# well past a 256- or 512-token cache budget. Turn 12 asks for the facts back:
+# with eviction, the turn-1 tokens may no longer be in the KV cache.
+Please remember two facts for later: my project is called ORBIT, and my lucky number is 47. Reply with just OK.
+Explain what a CPU cache is.
+How does a refrigerator keep food cold?
+Describe the water cycle.
+What are the main causes of inflation?
+Explain how vaccines train the immune system.
+What is the difference between weather and climate?
+How do airplanes stay in the air?
+What is photosynthesis?
+Explain what an operating system does.
+Why is the sky blue?
+What is my project called, and what is my lucky number?

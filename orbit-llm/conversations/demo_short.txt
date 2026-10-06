@@ -1,0 +1,5 @@
+﻿# Short multi-turn demo conversation for orbit_chat.
+What is OpenVINO, in two sentences?
+Why would someone run a language model locally instead of in the cloud?
+Give me one disadvantage of running it locally.
+Summarize our conversation in one sentence.
