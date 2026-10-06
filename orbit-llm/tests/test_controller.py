@@ -261,6 +261,126 @@ def test_single_noisy_run_moves_correction_only_partly():
     assert correction["ttft_factor"] == pytest.approx(1 + orbit.CORRECTION_ALPHA * 2)
 
 
+def test_outlier_run_is_clipped_before_averaging():
+    state = {"corrections": {}}
+
+    # A freak run 10x slower than predicted counts as only RATIO_MAX (3x):
+    # 0.7 * 1.0 + 0.3 * 3.0 = 1.6, not 0.7 + 0.3 * 10 = 3.7.
+    correction = orbit.update_correction(
+        state, "INT4@gpu", 100.0, 50.0, actual_ttft_ms=1000.0, actual_tpot_ms=50.0
+    )
+
+    assert correction["ttft_factor"] == pytest.approx(1.6)
+
+
+def test_memory_underprediction_is_learned_faster_than_overprediction():
+    under = {"corrections": {}}
+    over = {"corrections": {}}
+
+    # Measured 1500 MiB when 1000 was predicted: ratio 1.5 > 1.0, alpha 0.6.
+    # 0.4 * 1.0 + 0.6 * 1.5 = 1.3
+    orbit.update_correction(
+        under, "A", 100.0, 50.0, 100.0, 50.0, raw_peak_mib=1000.0, actual_peak_mib=1500.0
+    )
+    # Measured 700 MiB when 1000 was predicted: ratio 0.7 < 1.0, alpha 0.2.
+    # 0.8 * 1.0 + 0.2 * 0.7 = 0.94
+    orbit.update_correction(
+        over, "A", 100.0, 50.0, 100.0, 50.0, raw_peak_mib=1000.0, actual_peak_mib=700.0
+    )
+
+    assert under["corrections"]["A"]["peak_factor"] == pytest.approx(1.3)
+    assert over["corrections"]["A"]["peak_factor"] == pytest.approx(0.94)
+
+
+def test_memory_factor_converges_to_persistent_bias():
+    state = {"corrections": {}}
+
+    for _ in range(12):
+        orbit.update_correction(
+            state, "A", 100.0, 50.0, 100.0, 50.0,
+            raw_peak_mib=1000.0, actual_peak_mib=1400.0,
+        )
+
+    assert state["corrections"]["A"]["peak_factor"] == pytest.approx(1.4, rel=0.01)
+
+
+def test_state_written_before_memory_factor_existed_still_works():
+    state = {
+        "corrections": {
+            "A": {"ttft_factor": 1.2, "tpot_factor": 1.1, "observations": 4}
+        }
+    }
+
+    correction = orbit.update_correction(
+        state, "A", 100.0, 50.0, 100.0, 50.0, raw_peak_mib=1000.0, actual_peak_mib=1000.0
+    )
+
+    assert correction["peak_factor"] == pytest.approx(1.0)
+    assert correction["observations"] == 5
+
+
+def test_predict_applies_learned_memory_factor():
+    class FakeTwin:
+        def predict(self, frame):
+            n = len(frame)
+            return {
+                "ttft_ms": np.full(n, 100.0),
+                "tpot_ms_per_token": np.full(n, 10.0),
+                "sampled_peak_rss_mib": np.full(n, 1000.0),
+            }
+
+    frame = pd.DataFrame(
+        [{"candidate": "A", "label": "INT4", "device": "CPU", "output_tokens": 10}]
+    )
+    state = {
+        "corrections": {"A": {"peak_factor": 1.5}},
+        "loaded_candidate": "A",
+        "gpu_cache_warm": [],
+    }
+
+    result = orbit.predict(frame, FakeTwin(), None, state)
+
+    assert result["raw_peak_mib"].iloc[0] == pytest.approx(1000.0)
+    assert result["pred_peak_mib"].iloc[0] == pytest.approx(1500.0)
+
+
+def explore_frame():
+    return pd.DataFrame(
+        {
+            "candidate": ["best", "second", "third", "infeasible"],
+            "feasible": [True, True, True, False],
+        }
+    )
+
+
+def test_no_exploration_when_epsilon_is_zero():
+    frame = explore_frame()
+    chosen = frame.iloc[0]
+
+    result = orbit.maybe_explore(frame, chosen, 0.0, np.random.default_rng(0))
+
+    assert result["candidate"] == "best"
+
+
+def test_exploration_picks_only_other_feasible_candidates():
+    frame = explore_frame()
+    chosen = frame.iloc[0]
+    rng = np.random.default_rng(0)
+
+    picked = {orbit.maybe_explore(frame, chosen, 1.0, rng)["candidate"] for _ in range(50)}
+
+    assert picked <= {"second", "third"}
+    assert picked == {"second", "third"}
+
+
+def test_exploration_keeps_choice_when_nothing_else_is_feasible():
+    frame = pd.DataFrame({"candidate": ["only", "bad"], "feasible": [True, False]})
+
+    result = orbit.maybe_explore(frame, frame.iloc[0], 1.0, np.random.default_rng(0))
+
+    assert result["candidate"] == "only"
+
+
 # ---------------------------------------------------------------------------
 # Evaluation scoring
 
