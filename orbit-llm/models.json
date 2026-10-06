@@ -1,0 +1,26 @@
+{
+  "FP16": {
+    "path": "C:/Users/parva/tinyllama-ov",
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "parameters_billion": 1.1,
+    "weights": "fp16"
+  },
+  "INT8": {
+    "path": "C:/Users/parva/tinyllama-int8",
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "parameters_billion": 1.1,
+    "weights": "int8"
+  },
+  "INT4": {
+    "path": "C:/Users/parva/tinyllama-int4",
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "parameters_billion": 1.1,
+    "weights": "int4"
+  },
+  "Q3B-INT4": {
+    "path": "C:/Users/parva/qwen2.5-coder-3b-int4",
+    "family": "Qwen2.5-Coder-3B-Instruct",
+    "parameters_billion": 3.1,
+    "weights": "int4"
+  }
+}

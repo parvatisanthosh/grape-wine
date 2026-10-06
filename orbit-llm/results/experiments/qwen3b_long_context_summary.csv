@@ -1,0 +1,4 @@
+kv_precision,label,prompt_tokens,runs,failures,failure_statuses,ttft_ms_median,ttft_ms_min,ttft_ms_max,tpot_ms_per_token_median,tpot_ms_per_token_min,tpot_ms_per_token_max,throughput_tokens_per_second_median,throughput_tokens_per_second_min,throughput_tokens_per_second_max,sampled_peak_rss_mib_median,sampled_peak_rss_mib_min,sampled_peak_rss_mib_max,sys_available_ram_mib_median,sys_available_ram_mib_min,sys_available_ram_mib_max,sys_cpu_busy_percent_median,sys_cpu_busy_percent_min,sys_cpu_busy_percent_max
+default,Q3B-INT4,2048,6,0,,8699.1,8573.57,10974.83,56.03,54.12,90.85,17.85,11.01,18.48,2739.3,2737.6,2772.3,2628.8,2484.9,3459.9,12.35,8.2,77.0
+default,Q3B-INT4,4096,6,0,,19929.48,15548.41,57442.26,53.44,50.26,8425.16,18.71,0.12,19.9,3011.4,2894.5,3052.2,2091.4,1552.5,2194.2,10.0,8.3,94.2
+default,Q3B-INT4,8192,6,0,,53212.84,48391.36,58257.62,61.41,59.63,72.49,16.28,13.79,16.77,3330.45,3300.3,3338.1,2367.4,1951.2,2883.8,13.05,9.5,55.1

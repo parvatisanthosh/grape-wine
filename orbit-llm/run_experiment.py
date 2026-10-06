@@ -142,6 +142,26 @@ def load_completed(jsonl_path):
     return completed
 
 
+def prevent_sleep():
+    """Keep Windows from idle-sleeping while this process runs.
+
+    SetThreadExecutionState is a per-process request (what media players use);
+    it is released automatically when the process exits and changes no
+    power settings. A closed lid or a manual Sleep still sleeps.
+    """
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+
+    ctypes.windll.kernel32.SetThreadExecutionState(
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    )
+
+
 def main():
     args = get_arguments()
     plan = load_plan(args.plan)
@@ -188,6 +208,8 @@ def main():
                 f"{make_config_id(grid_values)}"
             )
         return
+
+    prevent_sleep()
 
     failed = 0
     experiment_start = time.perf_counter()

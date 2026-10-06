@@ -597,3 +597,83 @@ Single runs, INT4, 32 output tokens, about 1.3–2.4 GB of RAM free:
 possible. Planned dimensions: GPU vs CPU P-cores, KV precision at long context, and
 prefix caching. GPU memory needs its own measurement, because process RSS under-counts
 iGPU buffers.
+
+### Finding 17 — 3B model: the GPU is what makes it usable (`plans/qwen3b.json`)
+
+n = 6 per configuration, 2 shuffled rounds, 64 output tokens, unique prompts.
+
+| Qwen2.5-Coder-3B INT4 | CPU P-cores, 256 tok | GPU, 256 tok | CPU P-cores, 1024 tok | GPU, 1024 tok |
+|---|---|---|---|---|
+| TTFT | 5.8 s | **0.96 s** | 29.0 s | **4.3 s** |
+| Decode | 8.7 tok/s | **18.9 tok/s** | 7.0 tok/s | **18.4 tok/s** |
+| Peak RSS | 3838 MiB | 2524 MiB | 4014 MiB | 2624 MiB |
+
+- **Speed:** the GPU is 6–7× faster on TTFT and 2.2–2.6× faster on decode. At 1.1B
+  (Finding 11), the GPU was the better choice; at 3B, CPU-only gives 29 s to first token
+  for a one-page prompt.
+- **KV precision on CPU (u8 default vs f16):**
+  - Memory: f16 costs +18 MiB at 1024+64 tokens, against 19.1 MiB from theory (Qwen:
+    18 KiB per token at u8, 36 KiB at f16).
+  - Speed: f16 was *faster* at 1024 tokens, with TPOT 106 vs 144 ms and TTFT 25.4 vs 29.0 s.
+    That suggests u8 dequantization costs decode time at longer contexts, matching the
+    weak signal in Finding 6. But the u8 TPOT range was wide (95–217 ms), so it is not
+    conclusive.
+- **Explicit KV precision crashes on the GPU.** Both u8 and f16 fail on the first
+  `generate()`:
+
+  ```
+  [GPU] Incorrect block size for Paged Attention operation for key cache quant mode
+  BY_CHANNEL. Expected 20, but got 12
+  ```
+
+  Only the plugin default works; it reports `KV_CACHE_PRECISION = dynamic`. The failing
+  rows are recorded in `results/gpu_u8_kv_failure.jsonl` and `results/experiments/qwen3b.jsonl`.
+  An upstream issue is drafted in `notes/upstream_issue_gpu_kv_precision.md` (not filed).
+  For ORBIT this is a **hard constraint**: KV precision is a CPU-only setting on this
+  stack.
+
+### Finding 18 — Long context on the GPU, and a machine stall caught by telemetry (`plans/qwen3b_long_context.json`)
+
+| Prompt | TTFT | Prefill rate | TPOT | Peak RSS |
+|---|---|---|---|---|
+| 2048 | 8.7 s | 235 tok/s | 56 ms | 2739 MiB |
+| 4096 | 19.9 s | 206 tok/s | 53 ms | 3011 MiB |
+| 8192 | 53.2 s | 154 tok/s | 61 ms | 3330 MiB |
+
+- **Prefill is superlinear at long context.** Doubling the prompt raises TTFT 2.3× (from
+  2k to 4k) and then 2.7× (from 4k to 8k), because attention cost grows with the square of
+  the length. Decode slows only slightly.
+- **One run stalled for 9.8 minutes** (4096 tokens, round 2): TPOT was 8425 ms/token
+  against ~53 ms normally, and wall time was 588 s.
+  - The during-run telemetry shows the whole machine was idle: own CPU 0%, background
+    CPU 2%, against 11–14% in the neighbouring runs.
+  - This points to the iGPU or system being put into a low-power state mid-run (for
+    example a display timeout), not to anything in the model. It happened despite the
+    runner holding a Windows "system required" request.
+  - **Rule adopted:** `build_dataset.py` drops runs whose TTFT or TPOT exceeds 5× their
+    own configuration's median. It drops exactly this one run. Ordinary noise stays
+    within 2×.
+
+### Finding 19 — On new data, the physical model generalizes and the trees do not
+
+The Twin was re-run on the extended dataset: 557 runs, 94 configurations, now including
+3B.
+
+| Target | Noise floor | Analytical | GBM |
+|---|---|---|---|
+| TTFT, median APE | 11.4% | **15.7%** | 18.0% |
+| TTFT, mean APE | 18.8% | **24.5%** | 393.7% |
+| TPOT, median APE | 8.1% | 11.2% | **9.3%** |
+| Peak RSS, median APE | 0.1% | **0.3%** | 0.4% |
+
+- **The GBM's TTFT collapses on prefix-cache hits.** For held-out *repeated* 1920-token
+  prompts it predicted ~13 s against an actual 58–77 ms (errors of 17,000–22,000%).
+  Cache hits at 512 tokens were in its training folds, but the trees learned
+  "long prompt → slow" without learning *why* hits are fast. The analytical model encodes
+  the mechanism (a hit has near-constant TTFT) and predicted 60–69 ms.
+- **On the 3B model, the analytical TTFT was 14–24% median error**, against 54–69% for
+  the GBM.
+- **Conclusion:** for a controller that has to handle configurations and workloads not in
+  its training data, the mechanism-based Twin is more trustworthy, and it is explainable.
+  `orbit.py` uses the analytical Twin. The GBM remains slightly better on TPOT within the
+  training distribution.

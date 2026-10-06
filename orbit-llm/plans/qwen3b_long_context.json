@@ -1,0 +1,23 @@
+{
+  "name": "qwen3b_long_context",
+  "description": "Phase 6b: long-context KV-cache behaviour on the iGPU, where the 3B model is fast enough for 2k-8k prompts. Per-token KV for Qwen2.5-3B: 36 KiB at f16, so 8k tokens = 288 MiB; GPU default precision is chosen by the plugin; explicit u8 or f16 fails on this GPU (Finding 17), so only the default is run.",
+  "models": {
+    "Q3B-INT4": "C:/Users/parva/qwen2.5-coder-3b-int4"
+  },
+  "base": {
+    "device": "GPU",
+    "cache_dir": "ov_cache/gpu",
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "grid": {
+    "label": ["Q3B-INT4"],
+    "kv_precision": ["default"],
+    "prompt_tokens": [2048, 4096, 8192]
+  },
+  "rounds": 2,
+  "seed": 11,
+  "cooldown_seconds": 5
+}
