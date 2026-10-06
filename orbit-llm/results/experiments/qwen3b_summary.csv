@@ -1,0 +1,9 @@
+kv_precision,label,prompt_tokens,variant,runs,failures,failure_statuses,ttft_ms_median,ttft_ms_min,ttft_ms_max,tpot_ms_per_token_median,tpot_ms_per_token_min,tpot_ms_per_token_max,throughput_tokens_per_second_median,throughput_tokens_per_second_min,throughput_tokens_per_second_max,sampled_peak_rss_mib_median,sampled_peak_rss_mib_min,sampled_peak_rss_mib_max,sys_available_ram_mib_median,sys_available_ram_mib_min,sys_available_ram_mib_max,sys_cpu_busy_percent_median,sys_cpu_busy_percent_min,sys_cpu_busy_percent_max
+default,Q3B-INT4,256,cpu_pcore,6,0,,5815.76,5577.09,7572.7,114.85,106.11,142.15,8.71,7.03,9.42,3838.45,3836.1,3839.5,2403.8,2177.9,2822.0,25.2,12.3,26.4
+default,Q3B-INT4,256,gpu,6,0,,959.18,746.47,1121.56,52.98,43.55,58.44,18.9,17.11,22.96,2523.75,2519.7,2534.0,3861.5,3411.3,4327.2,16.75,0.6,26.9
+default,Q3B-INT4,1024,cpu_pcore,6,0,,28981.99,25652.81,45764.11,144.42,94.77,216.95,6.95,4.61,10.55,4013.8,4012.6,4015.8,2044.4,561.5,2896.9,13.8,1.3,35.8
+default,Q3B-INT4,1024,gpu,6,0,,4346.85,3114.16,4921.95,54.25,46.42,56.59,18.44,17.67,21.54,2623.55,2602.7,2639.1,3747.85,3539.1,4041.6,26.7,18.6,34.4
+f16,Q3B-INT4,256,cpu_pcore,6,0,,5857.0,5520.7,6751.62,119.93,114.89,120.87,8.34,8.27,8.7,3844.0,3843.1,3844.9,2233.8,2048.5,2620.8,22.2,14.9,26.0
+f16,Q3B-INT4,256,gpu,0,2,warmup_failed,,,,,,,,,,,,,,,,,,
+f16,Q3B-INT4,1024,cpu_pcore,6,0,,25383.5,19846.4,28432.1,106.47,94.91,124.7,9.41,8.02,10.54,4031.65,4029.7,4033.7,2333.2,1997.1,2565.3,7.65,2.4,30.5
+f16,Q3B-INT4,1024,gpu,0,2,warmup_failed,,,,,,,,,,,,,,,,,,

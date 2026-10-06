@@ -1,0 +1,25 @@
+{
+  "name": "qwen3b",
+  "description": "Phase 6a: Qwen2.5-Coder-3B INT4 on the iGPU vs the best CPU placement (P-cores), with default vs f16 KV cache (CPU default u8; GPU default dynamic — explicit u8 fails on GPU, see results/gpu_u8_kv_failure.jsonl). Needs ~4.5 GB free RAM for the CPU runs.",
+  "models": {
+    "Q3B-INT4": "C:/Users/parva/qwen2.5-coder-3b-int4"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "variants": {
+    "gpu": {"device": "GPU", "cache_dir": "ov_cache/gpu"},
+    "cpu_pcore": {"cores": "pcore"}
+  },
+  "grid": {
+    "label": ["Q3B-INT4"],
+    "kv_precision": ["default", "f16"],
+    "prompt_tokens": [256, 1024]
+  },
+  "rounds": 2,
+  "seed": 10,
+  "cooldown_seconds": 5
+}

@@ -46,6 +46,13 @@ TARGETS = [
     "sampled_peak_rss_mib",
 ]
 
+STALL_FACTOR = 5
+
+LOAD_COLUMNS = [
+    "load_ms",
+    "model_cache",
+]
+
 
 def load_rows():
     rows = []
@@ -76,10 +83,11 @@ def normalize(frame):
     frame["prompt_tokens"] = frame["requested_input_tokens"].astype(int)
     frame["output_tokens"] = frame["requested_output_tokens"].astype(int)
 
-    # u8 is the verified CPU default (Core.get_property, FINDINGS Phase 4).
-    frame["kv_precision"] = frame["kv_precision"].replace(
-        {"default": "u8"}
-    )
+    # Resolve "default" per device: u8 on CPU (verified, FINDINGS Phase 4);
+    # on GPU the plugin reports "dynamic" and picks the type itself.
+    is_default = frame["kv_precision"] == "default"
+    frame.loc[is_default & (frame["device"] == "CPU"), "kv_precision"] = "u8"
+    frame.loc[is_default & (frame["device"] == "GPU"), "kv_precision"] = "gpu_default"
 
     # SDPA has no prefix cache or paged-cache settings.
     frame["prefix_caching"] = frame["prefix_caching"].fillna(False).astype(bool)
@@ -102,12 +110,36 @@ def normalize(frame):
         .agg("|".join, axis=1)
     )
 
+    # Load-time context, used by the optimizer for switching costs. Older
+    # rows predate the cache_dir field; they ran without a model cache.
+    frame["load_ms"] = frame["pipeline_construction_ms"]
+    frame["model_cache"] = (
+        frame.get("cache_dir", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.len()
+        > 0
+    )
+
+    # Drop stalled runs: TTFT or TPOT more than STALL_FACTOR x their own
+    # configuration's median. These are machine-level stalls, not model
+    # behaviour (FINDINGS Finding 18: one run sat idle for 9 minutes with
+    # 0% CPU). Ordinary noise stays well within 2x.
+    stalled = pd.Series(False, index=frame.index)
+    for metric in ["ttft_ms", "tpot_ms_per_token"]:
+        median = frame.groupby("config_key")[metric].transform("median")
+        stalled |= frame[metric] > STALL_FACTOR * median
+    if stalled.any():
+        print(f"Dropping {int(stalled.sum())} stalled run(s)")
+    frame = frame[~stalled]
+
     columns = (
         ["experiment", "config_key"]
         + CONFIG_FEATURES
         + WORKLOAD_FEATURES
         + MACHINE_FEATURES
         + TARGETS
+        + LOAD_COLUMNS
     )
 
     return frame[columns].reset_index(drop=True)
