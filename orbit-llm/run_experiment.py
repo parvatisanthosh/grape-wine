@@ -38,6 +38,12 @@ def get_arguments():
         help="Print the schedule without running anything.",
     )
 
+    parser.add_argument(
+        "--allow-battery",
+        action="store_true",
+        help="Run even when the laptop is not plugged in.",
+    )
+
     return parser.parse_args()
 
 
@@ -162,8 +168,30 @@ def prevent_sleep():
     )
 
 
+def require_ac_power(allow_battery=False):
+    """Refuse to benchmark on battery: it runs ~10x slower (Finding 20)."""
+    import psutil
+
+    battery = psutil.sensors_battery()
+
+    if battery is None or battery.power_plugged:
+        return
+
+    message = (
+        f"The laptop is on battery ({battery.percent:.0f}%). "
+        f"Measurements on battery are not comparable with AC runs."
+    )
+
+    if allow_battery:
+        print(f"Warning: {message}")
+        return
+
+    raise SystemExit(f"{message} Plug in, or pass --allow-battery.")
+
+
 def main():
     args = get_arguments()
+    require_ac_power(args.allow_battery)
     plan = load_plan(args.plan)
 
     output_path = Path(

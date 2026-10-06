@@ -38,6 +38,7 @@
 #include "openvino/genai/scheduler_config.hpp"
 #include "openvino/genai/version.hpp"
 #include "openvino/runtime/properties.hpp"
+#include "telemetry.hpp"
 
 namespace {
 
@@ -202,54 +203,15 @@ Options parse_arguments(int argc, char* argv[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Process and machine telemetry (Windows).
+// Process and machine telemetry (Windows). Memory helpers live in
+// telemetry.hpp, shared with orbit_chat.
 
-double bytes_to_mib(std::uint64_t bytes) {
-    return static_cast<double>(bytes) / (1024.0 * 1024.0);
-}
-
-double get_rss_mib() {
-    PROCESS_MEMORY_COUNTERS counters{};
-    GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
-    return bytes_to_mib(counters.WorkingSetSize);
-}
-
-double get_lifetime_peak_rss_mib() {
-    PROCESS_MEMORY_COUNTERS counters{};
-    GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
-    return bytes_to_mib(counters.PeakWorkingSetSize);
-}
-
-// Committed private memory. Unlike the working set, this includes memory that
-// has been allocated but not yet touched (e.g. a pre-allocated KV cache), and it
-// is what counts against the system commit limit when predicting OOM.
-double get_commit_mib() {
-    PROCESS_MEMORY_COUNTERS_EX counters{};
-    GetProcessMemoryInfo(GetCurrentProcess(),
-                         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
-                         sizeof(counters));
-    return bytes_to_mib(counters.PrivateUsage);
-}
-
-double get_lifetime_peak_commit_mib() {
-    PROCESS_MEMORY_COUNTERS counters{};
-    GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
-    return bytes_to_mib(counters.PeakPagefileUsage);
-}
-
-double get_available_ram_mib() {
-    MEMORYSTATUSEX status{};
-    status.dwLength = sizeof(status);
-    GlobalMemoryStatusEx(&status);
-    return bytes_to_mib(status.ullAvailPhys);
-}
-
-double get_total_ram_mib() {
-    MEMORYSTATUSEX status{};
-    status.dwLength = sizeof(status);
-    GlobalMemoryStatusEx(&status);
-    return bytes_to_mib(status.ullTotalPhys);
-}
+using orbit::get_available_ram_mib;
+using orbit::get_commit_mib;
+using orbit::get_lifetime_peak_commit_mib;
+using orbit::get_lifetime_peak_rss_mib;
+using orbit::get_rss_mib;
+using orbit::get_total_ram_mib;
 
 std::uint64_t filetime_to_u64(const FILETIME& time) {
     return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
@@ -711,6 +673,13 @@ int main(int argc, char* argv[]) {
         row.set("iteration", iteration);
         row.set("prompt_id", prompt_id);
         row.set("sys_available_ram_mib", get_available_ram_mib(), 1);
+        const auto power = orbit::get_power_state();
+        if (power.known) {
+            row.set("on_ac_power", power.on_ac);
+        } else {
+            row.set_null("on_ac_power");
+        }
+        row.set("battery_percent", power.battery_percent);
         row.set("sys_cpu_busy_percent", sample_system_cpu_busy_percent(), 1);
         row.set("status", "failed");
         row.set("error", "");
