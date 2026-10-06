@@ -56,6 +56,18 @@ RAM_HEADROOM_MIB = 512
 # Weight of the newest observation in the correction factors.
 CORRECTION_ALPHA = 0.3
 
+# One run's measured/predicted ratio is clipped to this range before it is
+# averaged in, so a single freak run (a background update, a failed warm-up)
+# cannot drag a factor far from the truth.
+RATIO_MIN = 0.5
+RATIO_MAX = 3.0
+
+# Memory is corrected asymmetrically. Under-predicting memory risks an
+# out-of-memory crash, so a measurement above the prediction is learned fast;
+# over-predicting only wastes some headroom, so that is learned slowly.
+PEAK_ALPHA_UNDER = 0.6
+PEAK_ALPHA_OVER = 0.2
+
 
 def get_arguments():
     parser = argparse.ArgumentParser(
@@ -86,6 +98,15 @@ def get_arguments():
         help=(
             "The prompt repeats a prefix the currently loaded pipeline has "
             "already processed (prefix-cache hit, Finding 8)."
+        ),
+    )
+    parser.add_argument(
+        "--explore",
+        type=float,
+        default=0.0,
+        help=(
+            "Probability (0-1) of running a different feasible candidate "
+            "instead of the best one, so stale corrections get re-measured."
         ),
     )
     parser.add_argument(
@@ -222,18 +243,21 @@ def predict(frame, twin, dataset, state):
     frame = frame.copy()
     frame["raw_ttft_ms"] = raw["ttft_ms"]
     frame["raw_tpot_ms"] = raw["tpot_ms_per_token"]
-    frame["pred_peak_mib"] = raw["sampled_peak_rss_mib"]
+    frame["raw_peak_mib"] = raw["sampled_peak_rss_mib"]
 
     ttft_factor = []
     tpot_factor = []
+    peak_factor = []
 
     for identifier in frame["candidate"]:
         correction = state["corrections"].get(identifier, {})
         ttft_factor.append(correction.get("ttft_factor", 1.0))
         tpot_factor.append(correction.get("tpot_factor", 1.0))
+        peak_factor.append(correction.get("peak_factor", 1.0))
 
     frame["pred_ttft_ms"] = frame["raw_ttft_ms"] * np.array(ttft_factor)
     frame["pred_tpot_ms"] = frame["raw_tpot_ms"] * np.array(tpot_factor)
+    frame["pred_peak_mib"] = frame["raw_peak_mib"] * np.array(peak_factor)
 
     load = []
 
@@ -343,6 +367,11 @@ def choose(frame, objective, quality):
 # Layer 3: run and correct
 
 
+def clip_ratio(actual, raw):
+    """measured / predicted, limited so one freak run cannot dominate."""
+    return min(max(actual / raw, RATIO_MIN), RATIO_MAX)
+
+
 def update_correction(
     state,
     candidate,
@@ -350,17 +379,25 @@ def update_correction(
     raw_tpot_ms,
     actual_ttft_ms,
     actual_tpot_ms,
+    raw_peak_mib=None,
+    actual_peak_mib=None,
 ):
     """Move the candidate's factors toward actual / raw-twin-prediction.
 
-    An exponentially weighted average: one noisy run moves the factor by
-    CORRECTION_ALPHA of its error, a persistent bias is learned within a
-    few requests.
+    Time factors: an exponentially weighted average. One noisy run moves a
+    factor by CORRECTION_ALPHA of its error, a persistent bias is learned
+    within a few requests, and each run's ratio is clipped first.
+
+    Peak-memory factor: same idea, but asymmetric. Measuring more memory than
+    predicted is learned fast (PEAK_ALPHA_UNDER) because that is the OOM
+    direction; measuring less is learned slowly (PEAK_ALPHA_OVER).
     """
     correction = state["corrections"].setdefault(
         candidate,
         {"ttft_factor": 1.0, "tpot_factor": 1.0, "observations": 0},
     )
+    # State files written before the memory factor existed lack this key.
+    correction.setdefault("peak_factor", 1.0)
 
     for factor_key, actual, raw in [
         ("ttft_factor", actual_ttft_ms, raw_ttft_ms),
@@ -368,11 +405,40 @@ def update_correction(
     ]:
         correction[factor_key] = (
             (1 - CORRECTION_ALPHA) * correction[factor_key]
-            + CORRECTION_ALPHA * (actual / raw)
+            + CORRECTION_ALPHA * clip_ratio(actual, raw)
+        )
+
+    if raw_peak_mib and actual_peak_mib:
+        ratio = clip_ratio(actual_peak_mib, raw_peak_mib)
+        alpha = (
+            PEAK_ALPHA_UNDER
+            if ratio > correction["peak_factor"]
+            else PEAK_ALPHA_OVER
+        )
+        correction["peak_factor"] = (
+            (1 - alpha) * correction["peak_factor"] + alpha * ratio
         )
 
     correction["observations"] += 1
     return correction
+
+
+def maybe_explore(frame, chosen, epsilon, rng):
+    """With probability epsilon, swap the chosen candidate for another one.
+
+    Without this, a candidate whose predictions became pessimistic (say, after
+    a busy spell) is never picked again, so it is never re-measured and its
+    correction never recovers. Only feasible candidates are considered, so
+    exploring never breaks a constraint the twin can see.
+    """
+    if epsilon <= 0 or rng.random() >= epsilon:
+        return chosen
+
+    others = frame[frame["feasible"] & (frame["candidate"] != chosen["candidate"])]
+    if others.empty:
+        return chosen
+
+    return others.iloc[int(rng.integers(len(others)))]
 
 
 def run_and_learn(choice, args, models, state):
@@ -407,6 +473,8 @@ def run_and_learn(choice, args, models, state):
         raw_tpot_ms=choice["raw_tpot_ms"],
         actual_ttft_ms=actual["ttft_ms"],
         actual_tpot_ms=actual["tpot_ms_per_token"],
+        raw_peak_mib=choice["raw_peak_mib"],
+        actual_peak_mib=actual["sampled_peak_rss_mib"],
     )
 
     state["loaded_candidate"] = choice["candidate"]
@@ -426,7 +494,8 @@ def run_and_learn(choice, args, models, state):
     print(
         f"\nCorrection for {choice['candidate']}: "
         f"TTFT x{correction['ttft_factor']:.3f}, "
-        f"TPOT x{correction['tpot_factor']:.3f} "
+        f"TPOT x{correction['tpot_factor']:.3f}, "
+        f"memory x{correction['peak_factor']:.3f} "
         f"({correction['observations']} observations)"
     )
 
@@ -492,6 +561,10 @@ def main():
     frame = check_constraints(frame, args, machine["sys_available_ram_mib"])
 
     choice = choose(frame, args.objective, quality)
+    if choice is not None:
+        choice = maybe_explore(
+            frame, choice, args.explore, np.random.default_rng()
+        )
     front = pareto_front(frame[frame["feasible"]])
 
     print("=" * 80)
