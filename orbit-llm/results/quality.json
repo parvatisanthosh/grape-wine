@@ -1,0 +1,30 @@
+{
+  "FP16": {
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "weights": "fp16",
+    "bits_per_byte": 0.6922,
+    "bits_per_byte_prose": 0.8709,
+    "bits_per_byte_code": 0.6234
+  },
+  "INT8": {
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "weights": "int8",
+    "bits_per_byte": 0.6922,
+    "bits_per_byte_prose": 0.8709,
+    "bits_per_byte_code": 0.6233
+  },
+  "INT4": {
+    "family": "TinyLlama-1.1B-Chat-v1.0",
+    "weights": "int4",
+    "bits_per_byte": 0.7017,
+    "bits_per_byte_prose": 0.879,
+    "bits_per_byte_code": 0.6333
+  },
+  "Q3B-INT4": {
+    "family": "Qwen2.5-Coder-3B-Instruct",
+    "weights": "int4",
+    "bits_per_byte": 0.5521,
+    "bits_per_byte_prose": 0.7422,
+    "bits_per_byte_code": 0.4788
+  }
+}

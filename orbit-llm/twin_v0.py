@@ -52,13 +52,54 @@ class GroupedLinearLaw:
     A group observed at a single x cannot give a slope. single_point says
     what to assume then: "constant" (y does not depend on x) or
     "proportional" (y = k * x, e.g. prefill time vs prompt length).
+
+    form="linear" fits y = slope * x + intercept. That line can dip below
+    zero for small x when the true curve bends upward, so quantities that
+    grow faster than linearly (prefill time, because attention cost grows
+    with prompt length squared) use form="power" instead:
+    y = a * x ** b, fitted as a straight line in log-log space. A power law
+    is positive for every x by construction, and b is kept in
+    [POWER_MIN, POWER_MAX] so a noisy group cannot invent a silly curve.
+
+    Beyond the longest x that was measured the curve is never allowed to grow
+    more slowly than linearly (exponent at least 1). Short prompts can look
+    sublinear because a fixed start-up cost dominates them, but the cost per
+    token of a longer prompt never shrinks, so carrying that slow growth
+    upward would under-predict long prompts.
     """
 
-    def __init__(self, x_function, group_levels, single_point="constant"):
+    POWER_MIN = 0.5
+    POWER_MAX = 2.0
+
+    def __init__(
+        self, x_function, group_levels, single_point="constant", form="linear"
+    ):
         self.x_function = x_function
         self.group_levels = group_levels
         self.single_point = single_point
+        self.form = form
         self.fits = []
+
+    def _fit_group(self, xs, ys):
+        """Return (kind, p, q, x_max): linear is (slope, intercept), power is
+        (a, b); x_max is the longest x measured (used by power laws only)."""
+        distinct = len(np.unique(xs)) >= 2
+
+        if self.form == "power" and distinct and (xs > 0).all() and (ys > 0).all():
+            exponent, log_a = np.polyfit(np.log(xs), np.log(ys), 1)
+            exponent = float(np.clip(exponent, self.POWER_MIN, self.POWER_MAX))
+            # Refit the multiplier for the (possibly clipped) exponent.
+            log_a = float(np.mean(np.log(ys)) - exponent * np.mean(np.log(xs)))
+            return ("power", float(np.exp(log_a)), exponent, float(xs.max()))
+
+        if distinct:
+            slope, intercept = np.polyfit(xs, ys, 1)
+            return ("linear", float(slope), float(intercept), None)
+
+        if self.single_point == "proportional":
+            return ("linear", float(np.median(ys / xs)), 0.0, None)
+
+        return ("linear", 0.0, float(np.median(ys)), None)
 
     def fit(self, frame, target):
         x = self.x_function(frame)
@@ -71,21 +112,13 @@ class GroupedLinearLaw:
                 xs = x.loc[index].to_numpy(dtype=float)
                 ys = frame.loc[index, target].to_numpy(dtype=float)
 
-                if len(np.unique(xs)) >= 2:
-                    slope, intercept = np.polyfit(xs, ys, 1)
-                elif self.single_point == "proportional":
-                    slope, intercept = float(np.median(ys / xs)), 0.0
-                else:
-                    slope, intercept = 0.0, float(np.median(ys))
-
                 level_fits[key if isinstance(key, tuple) else (key,)] = (
-                    slope,
-                    intercept,
+                    self._fit_group(xs, ys)
                 )
 
             self.fits.append(level_fits)
 
-        self.global_fit = (0.0, float(frame[target].median()))
+        self.global_fit = ("linear", 0.0, float(frame[target].median()), None)
         return self
 
     def predict(self, frame):
@@ -93,16 +126,29 @@ class GroupedLinearLaw:
         predictions = []
 
         for row_index, row in frame.iterrows():
-            slope, intercept = self.global_fit
+            kind, first, second, x_max = self.global_fit
 
             for level, level_fits in zip(self.group_levels, self.fits):
                 key = tuple(row[column] for column in level)
 
                 if key in level_fits:
-                    slope, intercept = level_fits[key]
+                    kind, first, second, x_max = level_fits[key]
                     break
 
-            predictions.append(slope * x.loc[row_index] + intercept)
+            value = x.loc[row_index]
+            if kind == "power":
+                value = max(value, 1.0)
+                if value > x_max:
+                    # Past the measured range: continue from the value at the
+                    # edge, growing at least linearly.
+                    edge = first * x_max**second
+                    predictions.append(
+                        edge * (value / x_max) ** max(second, 1.0)
+                    )
+                else:
+                    predictions.append(first * value**second)
+            else:
+                predictions.append(first * value + second)
 
         return np.maximum(np.array(predictions), 1e-3)
 
@@ -115,6 +161,7 @@ class AnalyticalTwin:
             lambda frame: frame["prompt_tokens"],
             [self.PLACEMENT, ["precision", "device"], ["device"]],
             single_point="proportional",
+            form="power",
         )
         # A cache hit only computes the uncached tail of the prompt, so its
         # TTFT is near-constant; it gets its own law.

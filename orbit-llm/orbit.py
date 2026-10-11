@@ -68,6 +68,15 @@ RATIO_MAX = 3.0
 PEAK_ALPHA_UNDER = 0.6
 PEAK_ALPHA_OVER = 0.2
 
+# Safety margins. A candidate is "robustly feasible" if even a plausibly bad
+# run (the MARGIN_COVERAGE quantile of past actual / predicted ratios) stays
+# inside the request's limits. Groups with fewer rows than MARGIN_MIN_ROWS
+# fall back to a wider group, and no margin is ever below 1 or above
+# MARGIN_MAX.
+MARGIN_COVERAGE = 0.90
+MARGIN_MIN_ROWS = 20
+MARGIN_MAX = 3.0
+
 
 def get_arguments():
     parser = argparse.ArgumentParser(
@@ -131,6 +140,36 @@ def load_state():
         "gpu_cache_warm": [],
         "corrections": {},
     }
+
+
+def sync_gpu_cache_state(state, dataset, cache_dir=GPU_CACHE_DIR):
+    """Make state["gpu_cache_warm"] match what is really on disk.
+
+    OpenVINO keeps compiled GPU models in cache_dir, so a model loaded in an
+    earlier session loads much faster now (about 2.8 s instead of 8 s for the
+    INT4 model). Starting every session believing the cache is empty made
+    ORBIT overestimate GPU load times and avoid the GPU for no reason.
+
+    Rule: an empty or missing cache folder means every GPU model is cold.
+    Otherwise a model counts as warm if it has run before (in this state) or
+    if the logged data shows it was loaded with the cache enabled.
+    """
+    folder = Path(cache_dir)
+
+    if not folder.is_dir() or not any(folder.iterdir()):
+        state["gpu_cache_warm"] = []
+        return state
+
+    logged = dataset[
+        (dataset["device"] == "GPU")
+        & dataset["model_cache"].astype(bool)
+        & dataset["load_ms"].notna()
+    ]["precision"]
+
+    state["gpu_cache_warm"] = sorted(
+        set(state.get("gpu_cache_warm", [])) | set(logged.unique())
+    )
+    return state
 
 
 def save_state(state):
@@ -284,31 +323,155 @@ def predict(frame, twin, dataset, state):
     return frame
 
 
-def check_constraints(frame, args, available_ram_mib):
-    reasons = []
+def check_constraints(frame, args, available_ram_mib, margins=None):
+    """Mark which candidates keep the request's promises.
 
-    for _, row in frame.iterrows():
+    Without margins a candidate is feasible if its predictions fit. With
+    margins it must also fit in the plausibly-bad case (the upper bounds):
+    "feasible" then means robustly feasible, "point_feasible" still means
+    the predictions alone fit, and "severity" says by how much the worst
+    case misses the limits (0 = fits everywhere).
+    """
+    if margins is not None:
+        frame = add_upper_bounds(frame, margins)
+        prefix = "upper"
+    else:
+        prefix = "pred"
+
+    def broken_by(row, ttft, total, peak):
         broken = []
 
-        if args.max_ttft_ms and row["pred_ttft_ms"] > args.max_ttft_ms:
+        if args.max_ttft_ms and row[ttft] > args.max_ttft_ms:
             broken.append("ttft")
-        if args.max_total_ms and row["pred_total_ms"] > args.max_total_ms:
+        if args.max_total_ms and row[total] > args.max_total_ms:
             broken.append("total")
-        if args.max_memory_mib and row["pred_peak_mib"] > args.max_memory_mib:
+        if args.max_memory_mib and row[peak] > args.max_memory_mib:
             broken.append("memory")
         # Only the CPU path is checked against free RAM: GPU buffers are not
         # fully visible in process RSS (Finding 11), so its RSS is a floor.
         if (
             row["device"] == "CPU"
-            and row["pred_peak_mib"] + RAM_HEADROOM_MIB > available_ram_mib
+            and row[peak] + RAM_HEADROOM_MIB > available_ram_mib
         ):
             broken.append("oom-risk")
 
-        reasons.append(",".join(broken))
+        return broken
+
+    reasons = []
+    point_ok = []
+    severity = []
+
+    for _, row in frame.iterrows():
+        reasons.append(
+            ",".join(
+                broken_by(
+                    row, f"{prefix}_ttft_ms", f"{prefix}_total_ms", f"{prefix}_peak_mib"
+                )
+            )
+        )
+        point_ok.append(
+            not broken_by(row, "pred_ttft_ms", "pred_total_ms", "pred_peak_mib")
+        )
+
+        overshoot = [0.0]
+        for limit, column in [
+            (args.max_ttft_ms, f"{prefix}_ttft_ms"),
+            (args.max_total_ms, f"{prefix}_total_ms"),
+            (args.max_memory_mib, f"{prefix}_peak_mib"),
+        ]:
+            if limit:
+                overshoot.append(row[column] / limit - 1)
+        severity.append(max(overshoot))
 
     frame = frame.copy()
     frame["violations"] = reasons
     frame["feasible"] = frame["violations"] == ""
+    frame["point_feasible"] = point_ok
+    frame["severity"] = severity
+    frame["margins_used"] = margins is not None
+    return frame
+
+
+def calibrate_margins(dataset, coverage=MARGIN_COVERAGE):
+    """How much worse than predicted a run plausibly turns out to be.
+
+    The twin predicts each logged run while that run's whole configuration is
+    held out (cross-validation), so the ratios actual / predicted are honest
+    errors, not memorised ones. For each metric and group we keep the
+    `coverage` quantile of those ratios: with coverage 0.9, about 9 held-out
+    runs in 10 came out no worse than prediction x margin.
+
+    Returns {metric: {group: margin}} with groups (device, cache_hit) and,
+    as a wider fallback, (device,).
+    """
+    from twin_v0 import cross_validated_predictions
+
+    predicted = cross_validated_predictions(dataset, AnalyticalTwin)
+    # metric -> column name (the same name is used for the twin's predictions)
+    columns = {
+        "ttft_ms": "ttft_ms",
+        "tpot_ms": "tpot_ms_per_token",
+        "peak_mib": "sampled_peak_rss_mib",
+    }
+
+    margins = {}
+
+    for metric, column in columns.items():
+        ratios = pd.DataFrame(
+            {
+                "device": dataset["device"].to_numpy(),
+                "cache_hit": dataset["cache_hit"].to_numpy(),
+                "ratio": dataset[column].to_numpy(float)
+                / predicted[column],
+            }
+        )
+        ratios = ratios[np.isfinite(ratios["ratio"])]
+
+        def margin_of(values):
+            return float(
+                min(max(np.quantile(values, coverage), 1.0), MARGIN_MAX)
+            )
+
+        table = {}
+        for device, group in ratios.groupby("device"):
+            if len(group) >= MARGIN_MIN_ROWS:
+                table[(device,)] = margin_of(group["ratio"])
+        for (device, hit), group in ratios.groupby(["device", "cache_hit"]):
+            if len(group) >= MARGIN_MIN_ROWS:
+                table[(device, int(hit))] = margin_of(group["ratio"])
+
+        margins[metric] = table
+
+    return margins
+
+
+def margin_for(margins, metric, device, cache_hit):
+    table = margins.get(metric, {})
+    return table.get((device, int(cache_hit)), table.get((device,), 1.0))
+
+
+def add_upper_bounds(frame, margins):
+    """Add the plausibly-bad-case version of every prediction.
+
+    Load time has no calibrated margin (it is not predicted by the twin), so
+    the upper total uses the point load estimate.
+    """
+    frame = frame.copy()
+
+    def column(metric, source):
+        return [
+            value * margin_for(margins, metric, row.device, row.cache_hit)
+            for value, row in zip(frame[source], frame.itertuples())
+        ]
+
+    frame["upper_ttft_ms"] = column("ttft_ms", "pred_ttft_ms")
+    frame["upper_tpot_ms"] = column("tpot_ms", "pred_tpot_ms")
+    frame["upper_peak_mib"] = column("peak_mib", "pred_peak_mib")
+    frame["upper_total_ms"] = (
+        frame["pred_load_ms"]
+        + frame["upper_ttft_ms"]
+        + frame["output_tokens"] * frame["upper_tpot_ms"]
+    )
     return frame
 
 
@@ -361,6 +524,52 @@ def choose(frame, objective, quality):
         ["quality", "pred_total_ms"],
         ascending=[False, True],
     ).iloc[0]
+
+
+def nearest_misses(frame, count=3):
+    """The candidates that came closest to keeping the request's promises,
+    with the reason each was rejected. Used to explain "nothing fits"."""
+    columns = [
+        column
+        for column in [
+            "candidate",
+            "pred_load_ms",
+            "pred_ttft_ms",
+            "pred_total_ms",
+            "pred_peak_mib",
+            "violations",
+            "severity",
+        ]
+        if column in frame
+    ]
+    return frame.sort_values(["severity", "pred_total_ms"]).head(count)[columns]
+
+
+def select(frame, objective, quality, fallback=False):
+    """choose() with an honest fallback order. Returns (row, mode) or (None, None).
+
+    robust      - passes every limit even in the plausibly-bad case
+    point-only  - only the predictions pass; the margin says it is risky
+    best-effort - nothing passes; the smallest predicted miss is used
+
+    Without fallback only the first rung is tried (the original behaviour).
+    """
+    margins_used = bool(frame["margins_used"].iloc[0]) if "margins_used" in frame else False
+
+    row = choose(frame, objective, quality)
+    if row is not None:
+        return row.copy(), "robust" if margins_used else "point"
+
+    if not fallback:
+        return None, None
+
+    if margins_used:
+        relaxed = frame.assign(feasible=frame["point_feasible"])
+        row = choose(relaxed, objective, quality)
+        if row is not None:
+            return row.copy(), "point-only"
+
+    return frame.sort_values(["severity", "pred_total_ms"]).iloc[0].copy(), "best-effort"
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +757,7 @@ def main():
 
     dataset = normalize(load_rows())
     twin = AnalyticalTwin().fit(dataset)
+    sync_gpu_cache_state(state, dataset)
 
     memory = psutil.virtual_memory()
     machine = {

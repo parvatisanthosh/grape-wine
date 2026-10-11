@@ -15,10 +15,26 @@ switches configuration, using the load time actually measured.
 
 A request violates its SLA if it fails, or if its measured TTFT, total time
 (load if switching + generation) or peak memory exceeds its constraint.
+
+Systems: baseline (OpenVINO defaults), static (one fixed configuration),
+orbit (predictions only) and orbit_robust (ORBIT that also checks the
+plausibly-bad case of every prediction, with a fallback order when no
+candidate is safe).
+
+Two phases are run for every system. First a calm phase (the scenarios
+below on an idle machine). Then a busy phase: the latency-sensitive
+scenarios are repeated while background processes keep several CPU cores
+busy, like a browser or a video call would. The busy phase is where a
+fixed configuration cannot adapt and ORBIT's online correction should
+show its value. Every system faces the same load.
 """
 
 import argparse
+import atexit
 import json
+import subprocess
+import sys
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -47,7 +63,59 @@ SCENARIOS = [
     ("quality_first", 256, 128, False, "quality", {"max_total_ms": 20000}),
 ]
 
-REPEATS = 2
+REPEATS = 3
+
+# Scenarios repeated in the busy phase: the ones with a time limit.
+BUSY_SCENARIO_NAMES = {"short_chat", "long_document", "follow_up"}
+BUSY_REPEATS = 3
+LOAD_WORKERS = 6
+COOLDOWN_SECONDS = 60
+
+
+class BackgroundLoad:
+    """Keep some CPU cores busy, the way a browser or a video call would.
+
+    Each worker is a separate process running an endless empty loop, which
+    uses one core fully. Only CPU is loaded. It slows inference down (TTFT,
+    TPOT) but does not change how much memory the model itself needs.
+    """
+
+    def __init__(self, workers, settle_seconds=3):
+        self.workers = workers
+        self.settle_seconds = settle_seconds
+        self.processes = []
+
+    @property
+    def active(self):
+        return bool(self.processes)
+
+    def start(self):
+        if self.active or self.workers <= 0:
+            return
+
+        for _ in range(self.workers):
+            self.processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", "while True: pass"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            )
+
+        # Let CPU usage settle so the controller's own reading sees the load.
+        time.sleep(self.settle_seconds)
+
+    def stop(self):
+        for process in self.processes:
+            process.terminate()
+
+        for process in self.processes:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+        self.processes = []
 
 
 def get_arguments():
@@ -56,29 +124,71 @@ def get_arguments():
         "--systems",
         nargs="+",
         default=["baseline", "static", "orbit"],
-        choices=["baseline", "static", "orbit"],
+        choices=["baseline", "static", "orbit", "orbit_robust"],
+    )
+    parser.add_argument(
+        "--coverage",
+        type=float,
+        default=orbit.MARGIN_COVERAGE,
+        help="orbit_robust: how many past runs the safety margin must cover "
+        "(0.9 = the margin covers 9 held-out runs in 10).",
+    )
+    parser.add_argument("--repeats", type=int, default=REPEATS)
+    parser.add_argument(
+        "--busy-repeats",
+        type=int,
+        default=BUSY_REPEATS,
+        help="Repeats of the time-limited scenarios under background load "
+        "(0 skips the busy phase).",
+    )
+    parser.add_argument(
+        "--load-workers",
+        type=int,
+        default=LOAD_WORKERS,
+        help="Background processes, each keeping one CPU core busy.",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=COOLDOWN_SECONDS,
+        help="Seconds to rest between systems so heat does not carry over.",
     )
     return parser.parse_args()
 
 
-def build_trace():
+def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
+    """The request list: a calm phase, then a busy phase.
+
+    Busy requests reuse the time-limited scenarios under the name
+    "<scenario>_busy", so results for calm and busy runs stay separate.
+    """
     trace = []
 
-    for repeat in range(REPEATS):
-        for name, prompt, output, repeat_prefix, objective, limits in SCENARIOS:
-            trace.append(
-                Namespace(
-                    scenario=name,
-                    repeat=repeat + 1,
-                    prompt_tokens=prompt,
-                    output_tokens=output,
-                    repeat_prefix=repeat_prefix,
-                    objective=objective,
-                    max_ttft_ms=limits.get("max_ttft_ms"),
-                    max_total_ms=limits.get("max_total_ms"),
-                    max_memory_mib=limits.get("max_memory_mib"),
+    def add(scenarios, count, busy):
+        for repeat in range(count):
+            for name, prompt, output, repeat_prefix, objective, limits in scenarios:
+                trace.append(
+                    Namespace(
+                        scenario=f"{name}_busy" if busy else name,
+                        phase="busy" if busy else "calm",
+                        busy=busy,
+                        repeat=repeat + 1,
+                        prompt_tokens=prompt,
+                        output_tokens=output,
+                        repeat_prefix=repeat_prefix,
+                        objective=objective,
+                        max_ttft_ms=limits.get("max_ttft_ms"),
+                        max_total_ms=limits.get("max_total_ms"),
+                        max_memory_mib=limits.get("max_memory_mib"),
+                    )
                 )
-            )
+
+    add(SCENARIOS, repeats, busy=False)
+    add(
+        [row for row in SCENARIOS if row[0] in BUSY_SCENARIO_NAMES],
+        busy_repeats,
+        busy=True,
+    )
 
     return trace
 
@@ -109,7 +219,11 @@ def execute(label, placement, request, models, loaded):
     return run_configuration(models[label]["path"], configuration)[-1]
 
 
-def orbit_decide(request, state, dataset, twin, models, quality):
+def orbit_decide(request, state, dataset, twin, models, quality, margins=None):
+    """One ORBIT decision. With margins it is the robust variant: candidates
+    must stay inside the limits even in the plausibly-bad case, and it falls
+    back to point predictions, then to the smallest miss, rather than giving
+    up. Without margins it is the original selector (it may find nothing)."""
     memory = psutil.virtual_memory()
     machine = {
         "sys_cpu_busy_percent": psutil.cpu_percent(interval=0.5),
@@ -123,9 +237,15 @@ def orbit_decide(request, state, dataset, twin, models, quality):
         frame,
         request,
         machine["sys_available_ram_mib"],
+        margins,
     )
 
-    return orbit.choose(frame, request.objective, quality)
+    row, mode = orbit.select(
+        frame, request.objective, quality, fallback=margins is not None
+    )
+    if row is not None:
+        row["mode"] = mode
+    return row, frame
 
 
 def judge(request, row, switched, quality):
@@ -178,16 +298,44 @@ def main():
 
     dataset = normalize(load_rows())
     twin = AnalyticalTwin().fit(dataset)
-    trace = build_trace()
+    trace = build_trace(args.repeats, args.busy_repeats)
+
+    margins = None
+    if "orbit_robust" in args.systems:
+        margins = orbit.calibrate_margins(dataset, args.coverage)
+        print(f"\nSafety margins at coverage {args.coverage} (worst-case multiplier):")
+        for metric, table in margins.items():
+            shown = ", ".join(
+                f"{'/'.join(map(str, key))} x{value:.2f}"
+                for key, value in sorted(table.items(), key=str)
+                if len(key) == 1
+            )
+            print(f"  {metric:<9} {shown}")
+
+    load = BackgroundLoad(args.load_workers)
+    atexit.register(load.stop)  # never leave burners running after a crash
 
     records = []
 
-    for system in args.systems:
+    for position, system in enumerate(args.systems):
+        if position > 0 and args.cooldown > 0:
+            print(f"\nResting {args.cooldown}s before {system} ...", flush=True)
+            time.sleep(args.cooldown)
+
         loaded = None
         # ORBIT learns within its own run only, starting from no corrections.
         state = {"loaded_candidate": None, "gpu_cache_warm": [], "corrections": {}}
+        # The compiled-model cache on disk is shared by every system, so
+        # start each one from what is really cached rather than from nothing.
+        orbit.sync_gpu_cache_state(state, dataset)
 
         for index, request in enumerate(trace, start=1):
+            if request.busy and not load.active:
+                print("\nStarting background load ...", flush=True)
+                load.start()
+            elif not request.busy and load.active:
+                load.stop()
+
             if system == "baseline":
                 label, placement = BASELINE
                 choice = None
@@ -195,13 +343,33 @@ def main():
                 label, placement = STATIC
                 choice = None
             else:
-                choice = orbit_decide(request, state, dataset, twin, models, quality)
+                choice, decision_frame = orbit_decide(
+                    request,
+                    state,
+                    dataset,
+                    twin,
+                    models,
+                    quality,
+                    margins if system == "orbit_robust" else None,
+                )
 
                 if choice is None:
+                    print(
+                        f"\n[{system} {index}/{len(trace)}] {request.scenario}: "
+                        "NO CANDIDATE FITS the request's limits. Closest:",
+                        flush=True,
+                    )
+                    print(orbit.nearest_misses(decision_frame).round(0).to_string(index=False))
+                    print(
+                        "  free RAM when deciding: "
+                        f"{decision_frame['sys_available_ram_mib'].iloc[0]:.0f} MiB",
+                        flush=True,
+                    )
                     record = {
                         "system": system,
                         "index": index,
                         "scenario": request.scenario,
+                        "phase": request.phase,
                         "chosen": None,
                         "status": "no_feasible_candidate",
                         "violated": True,
@@ -221,7 +389,7 @@ def main():
                 flush=True,
             )
 
-            if system == "orbit":
+            if system.startswith("orbit"):
                 row = orbit.run_and_learn(choice, request, models, state)
             else:
                 row = execute(label, placement, request, models, loaded)
@@ -232,6 +400,7 @@ def main():
                 "system": system,
                 "index": index,
                 "scenario": request.scenario,
+                "phase": request.phase,
                 "repeat": request.repeat,
                 "chosen": identifier,
                 "switched": switched,
@@ -239,12 +408,15 @@ def main():
             }
             if choice is not None:
                 record["predicted_total_ms"] = float(choice["pred_total_ms"])
+                record["mode"] = choice.get("mode")
 
             records.append(record)
 
             RESULTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
             with RESULTS_JSONL.open("a", encoding="utf-8") as file:
                 file.write(json.dumps(record, default=float) + "\n")
+
+        load.stop()
 
     frame = pd.DataFrame(records)
     summary = frame.groupby("system").agg(
@@ -269,6 +441,23 @@ def main():
     )
     print("\nSLA violation rate by scenario:")
     print((100 * by_scenario).round(0).to_string())
+
+    by_phase = frame.pivot_table(
+        index="phase",
+        columns="system",
+        values="violated",
+        aggfunc="mean",
+    )
+    print("\nSLA violation rate by phase (calm vs busy machine):")
+    print((100 * by_phase).round(0).to_string())
+
+    if "mode" in frame:
+        modes = frame.dropna(subset=["mode"]).pivot_table(
+            index="mode", columns="system", values="index", aggfunc="count"
+        ).fillna(0).astype(int)
+        print("\nHow ORBIT's choices were made (robust = safe even in the bad case,")
+        print("point = predictions only, point-only = fell back, best-effort = nothing fit):")
+        print(modes.to_string())
 
     print(f"\nRuns: {RESULTS_JSONL.resolve()}")
     print(f"Summary: {SUMMARY_CSV.resolve()}")

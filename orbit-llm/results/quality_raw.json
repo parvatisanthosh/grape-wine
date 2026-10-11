@@ -1,0 +1,110 @@
+{
+  "FP16": {
+    "code_limit_checker.py": {
+      "bytes": 10168,
+      "scored_tokens": 3117,
+      "nll_nats": 4420.425872802734
+    },
+    "code_multinomial_causal_lm.py": {
+      "bytes": 7047,
+      "scored_tokens": 2079,
+      "nll_nats": 2720.248077392578
+    },
+    "code_react_sample.py": {
+      "bytes": 7177,
+      "scored_tokens": 2164,
+      "nll_nats": 3398.5449829101562
+    },
+    "prose_contributing.md": {
+      "bytes": 2136,
+      "scored_tokens": 657,
+      "nll_nats": 1496.0109558105469
+    },
+    "prose_genai_readme.md": {
+      "bytes": 7267,
+      "scored_tokens": 2373,
+      "nll_nats": 4180.0782470703125
+    }
+  },
+  "INT8": {
+    "code_limit_checker.py": {
+      "bytes": 10168,
+      "scored_tokens": 3117,
+      "nll_nats": 4420.910919189453
+    },
+    "code_multinomial_causal_lm.py": {
+      "bytes": 7047,
+      "scored_tokens": 2079,
+      "nll_nats": 2719.816261291504
+    },
+    "code_react_sample.py": {
+      "bytes": 7177,
+      "scored_tokens": 2164,
+      "nll_nats": 3398.267547607422
+    },
+    "prose_contributing.md": {
+      "bytes": 2136,
+      "scored_tokens": 657,
+      "nll_nats": 1493.2442626953125
+    },
+    "prose_genai_readme.md": {
+      "bytes": 7267,
+      "scored_tokens": 2373,
+      "nll_nats": 4182.995300292969
+    }
+  },
+  "INT4": {
+    "code_limit_checker.py": {
+      "bytes": 10168,
+      "scored_tokens": 3117,
+      "nll_nats": 4497.65966796875
+    },
+    "code_multinomial_causal_lm.py": {
+      "bytes": 7047,
+      "scored_tokens": 2079,
+      "nll_nats": 2791.560333251953
+    },
+    "code_react_sample.py": {
+      "bytes": 7177,
+      "scored_tokens": 2164,
+      "nll_nats": 3418.3680725097656
+    },
+    "prose_contributing.md": {
+      "bytes": 2136,
+      "scored_tokens": 657,
+      "nll_nats": 1507.7777404785156
+    },
+    "prose_genai_readme.md": {
+      "bytes": 7267,
+      "scored_tokens": 2373,
+      "nll_nats": 4221.338684082031
+    }
+  },
+  "Q3B-INT4": {
+    "code_limit_checker.py": {
+      "bytes": 10168,
+      "scored_tokens": 2212,
+      "nll_nats": 3450.5316772460938
+    },
+    "code_multinomial_causal_lm.py": {
+      "bytes": 7047,
+      "scored_tokens": 1526,
+      "nll_nats": 2080.4322509765625
+    },
+    "code_react_sample.py": {
+      "bytes": 7177,
+      "scored_tokens": 1640,
+      "nll_nats": 2563.7779235839844
+    },
+    "prose_contributing.md": {
+      "bytes": 2136,
+      "scored_tokens": 561,
+      "nll_nats": 1388.737319946289
+    },
+    "prose_genai_readme.md": {
+      "bytes": 7267,
+      "scored_tokens": 1859,
+      "nll_nats": 3448.8653564453125
+    }
+  }
+}
