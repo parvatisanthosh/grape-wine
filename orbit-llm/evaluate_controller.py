@@ -21,6 +21,12 @@ orbit (predictions only) and orbit_robust (ORBIT that also checks the
 plausibly-bad case of every prediction, with a fallback order when no
 candidate is safe).
 
+Systems take turns request by request (an interleaved, paired design):
+for each request every system runs it back-to-back in a shuffled order,
+so all systems face the same machine conditions at the same time.
+Running one system's whole trace after another let laptop drift (heat,
+background activity) differ between systems and bias the comparison.
+
 Two phases are run for every system. First a calm phase (the scenarios
 below on an idle machine). Then a busy phase: the latency-sensitive
 scenarios are repeated while background processes keep several CPU cores
@@ -32,6 +38,7 @@ show its value. Every system faces the same load.
 import argparse
 import atexit
 import json
+import random
 import subprocess
 import sys
 import time
@@ -69,7 +76,8 @@ REPEATS = 3
 BUSY_SCENARIO_NAMES = {"short_chat", "long_document", "follow_up"}
 BUSY_REPEATS = 3
 LOAD_WORKERS = 6
-COOLDOWN_SECONDS = 60
+REST_SECONDS = 0
+SEED = 0
 
 
 class BackgroundLoad:
@@ -148,10 +156,17 @@ def get_arguments():
         help="Background processes, each keeping one CPU core busy.",
     )
     parser.add_argument(
-        "--cooldown",
+        "--rest",
         type=int,
-        default=COOLDOWN_SECONDS,
-        help="Seconds to rest between systems so heat does not carry over.",
+        default=REST_SECONDS,
+        help="Seconds to rest after each request (all systems), to let heat "
+        "settle. With interleaving every system gets the same rest.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=SEED,
+        help="Seed for the per-request shuffle of system order (reproducible).",
     )
     return parser.parse_args()
 
@@ -191,6 +206,49 @@ def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
     )
 
     return trace
+
+
+def paired_comparison(frame, first, second):
+    """Compare two systems on the same requests, run at the same time.
+
+    Returns (only_first_kept, only_second_kept, both_kept, both_broke): how
+    many requests one system kept its promise on while the other broke it.
+    Requests both kept or both broke say nothing about which is better, so
+    this cancels most of the machine's run-to-run noise.
+    """
+    pivot = frame.pivot_table(
+        index="index", columns="system", values="violated", aggfunc="first"
+    )
+    if first not in pivot or second not in pivot:
+        return None
+
+    pair = pivot[[first, second]].dropna().astype(bool)
+    return (
+        int((~pair[first] & pair[second]).sum()),
+        int((pair[first] & ~pair[second]).sum()),
+        int((~pair[first] & ~pair[second]).sum()),
+        int((pair[first] & pair[second]).sum()),
+    )
+
+
+def interleaved_schedule(trace, systems, seed=SEED):
+    """The run order: every request is run by all systems back-to-back.
+
+    Returns (index, request, system) tuples. The systems' order is shuffled
+    per request with a seeded generator, so no system always runs right after
+    the same other one (carry-over heat or GPU state spreads evenly) and the
+    same seed always gives the same plan.
+    """
+    rng = random.Random(seed)
+    plan = []
+
+    for index, request in enumerate(trace, start=1):
+        order = list(systems)  # a copy: shuffle() changes the list in place
+        rng.shuffle(order)
+        for system in order:
+            plan.append((index, request, system))
+
+    return plan
 
 
 def execute(label, placement, request, models, loaded):
@@ -317,55 +375,65 @@ def main():
 
     records = []
 
-    for position, system in enumerate(args.systems):
-        if position > 0 and args.cooldown > 0:
-            print(f"\nResting {args.cooldown}s before {system} ...", flush=True)
-            time.sleep(args.cooldown)
-
-        loaded = None
-        # ORBIT learns within its own run only, starting from no corrections.
+    # What each system has loaded, and ORBIT's learned state, kept per system
+    # for the whole run. Each ORBIT variant learns only from its own runs.
+    loaded = {system: None for system in args.systems}
+    states = {}
+    for system in args.systems:
         state = {"loaded_candidate": None, "gpu_cache_warm": [], "corrections": {}}
-        # The compiled-model cache on disk is shared by every system, so
-        # start each one from what is really cached rather than from nothing.
+        # The compiled-model cache on disk is shared, so start from what is
+        # really cached rather than from nothing.
         orbit.sync_gpu_cache_state(state, dataset)
+        states[system] = state
 
-        for index, request in enumerate(trace, start=1):
+    plan = interleaved_schedule(trace, args.systems, args.seed)
+    previous_index = None
+
+    for index, request, system in plan:
+        if index != previous_index:
+            if previous_index is not None and args.rest > 0:
+                time.sleep(args.rest)
+            # The same load applies to every system's run of this request.
             if request.busy and not load.active:
                 print("\nStarting background load ...", flush=True)
                 load.start()
             elif not request.busy and load.active:
                 load.stop()
+            previous_index = index
 
-            if system == "baseline":
-                label, placement = BASELINE
-                choice = None
-            elif system == "static":
-                label, placement = STATIC
-                choice = None
-            else:
-                choice, decision_frame = orbit_decide(
-                    request,
-                    state,
-                    dataset,
-                    twin,
-                    models,
-                    quality,
-                    margins if system == "orbit_robust" else None,
+        state = states[system]
+
+        if system == "baseline":
+            label, placement = BASELINE
+            choice = None
+        elif system == "static":
+            label, placement = STATIC
+            choice = None
+        else:
+            choice, decision_frame = orbit_decide(
+                request,
+                state,
+                dataset,
+                twin,
+                models,
+                quality,
+                margins if system == "orbit_robust" else None,
+            )
+
+            if choice is None:
+                print(
+                    f"\n[{system} {index}/{len(trace)}] {request.scenario}: "
+                    "NO CANDIDATE FITS the request's limits. Closest:",
+                    flush=True,
                 )
-
-                if choice is None:
-                    print(
-                        f"\n[{system} {index}/{len(trace)}] {request.scenario}: "
-                        "NO CANDIDATE FITS the request's limits. Closest:",
-                        flush=True,
-                    )
-                    print(orbit.nearest_misses(decision_frame).round(0).to_string(index=False))
-                    print(
-                        "  free RAM when deciding: "
-                        f"{decision_frame['sys_available_ram_mib'].iloc[0]:.0f} MiB",
-                        flush=True,
-                    )
-                    record = {
+                print(orbit.nearest_misses(decision_frame).round(0).to_string(index=False))
+                print(
+                    "  free RAM when deciding: "
+                    f"{decision_frame['sys_available_ram_mib'].iloc[0]:.0f} MiB",
+                    flush=True,
+                )
+                records.append(
+                    {
                         "system": system,
                         "index": index,
                         "scenario": request.scenario,
@@ -375,48 +443,48 @@ def main():
                         "violated": True,
                         "violations": "no-candidate",
                     }
-                    records.append(record)
-                    continue
+                )
+                continue  # next system's run (or the next request)
 
-                label, placement = choice["label"], choice["placement"]
+            label, placement = choice["label"], choice["placement"]
 
-            identifier = orbit.candidate_id(label, placement)
-            switched = loaded != identifier
+        identifier = orbit.candidate_id(label, placement)
+        switched = loaded[system] != identifier
 
-            print(
-                f"\n[{system} {index}/{len(trace)}] {request.scenario} "
-                f"-> {identifier}{' (switch)' if switched else ''}",
-                flush=True,
-            )
+        print(
+            f"\n[{system} {index}/{len(trace)}] {request.scenario} "
+            f"-> {identifier}{' (switch)' if switched else ''}",
+            flush=True,
+        )
 
-            if system.startswith("orbit"):
-                row = orbit.run_and_learn(choice, request, models, state)
-            else:
-                row = execute(label, placement, request, models, loaded)
+        if system.startswith("orbit"):
+            row = orbit.run_and_learn(choice, request, models, state)
+        else:
+            row = execute(label, placement, request, models, loaded[system])
 
-            loaded = identifier if row["status"] == "success" else None
+        loaded[system] = identifier if row["status"] == "success" else None
 
-            record = {
-                "system": system,
-                "index": index,
-                "scenario": request.scenario,
-                "phase": request.phase,
-                "repeat": request.repeat,
-                "chosen": identifier,
-                "switched": switched,
-                **judge(request, row, switched, quality),
-            }
-            if choice is not None:
-                record["predicted_total_ms"] = float(choice["pred_total_ms"])
-                record["mode"] = choice.get("mode")
+        record = {
+            "system": system,
+            "index": index,
+            "scenario": request.scenario,
+            "phase": request.phase,
+            "repeat": request.repeat,
+            "chosen": identifier,
+            "switched": switched,
+            **judge(request, row, switched, quality),
+        }
+        if choice is not None:
+            record["predicted_total_ms"] = float(choice["pred_total_ms"])
+            record["mode"] = choice.get("mode")
 
-            records.append(record)
+        records.append(record)
 
-            RESULTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
-            with RESULTS_JSONL.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(record, default=float) + "\n")
+        RESULTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+        with RESULTS_JSONL.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, default=float) + "\n")
 
-        load.stop()
+    load.stop()
 
     frame = pd.DataFrame(records)
     summary = frame.groupby("system").agg(
@@ -458,6 +526,20 @@ def main():
         print("\nHow ORBIT's choices were made (robust = safe even in the bad case,")
         print("point = predictions only, point-only = fell back, best-effort = nothing fit):")
         print(modes.to_string())
+
+    pairs = [
+        (a, b)
+        for a in ["orbit", "orbit_robust"]
+        for b in ["static", "baseline"]
+        if a in args.systems and b in args.systems
+    ]
+    if pairs:
+        print("\nPaired comparison (same request, same time):")
+        print(f"  {'':<26}{'only A kept':>12}{'only B kept':>12}{'both kept':>11}{'both broke':>11}")
+        for a, b in pairs:
+            result = paired_comparison(frame, a, b)
+            if result:
+                print(f"  A={a:<12} B={b:<9}" + "".join(f"{n:>12}" for n in result[:2]) + "".join(f"{n:>11}" for n in result[2:]))
 
     print(f"\nRuns: {RESULTS_JSONL.resolve()}")
     print(f"Summary: {SUMMARY_CSV.resolve()}")

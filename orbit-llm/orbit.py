@@ -68,6 +68,13 @@ RATIO_MAX = 3.0
 PEAK_ALPHA_UNDER = 0.6
 PEAK_ALPHA_OVER = 0.2
 
+# Model load time is learned online per model and device. Every run starts a
+# fresh process, so every run measures a real load. Like memory it is learned
+# fast when a load is slower than we currently believe (that breaks
+# total-time promises) and slowly when it is faster.
+LOAD_ALPHA_UNDER = 0.6
+LOAD_ALPHA_OVER = 0.2
+
 # Safety margins. A candidate is "robustly feasible" if even a plausibly bad
 # run (the MARGIN_COVERAGE quantile of past actual / predicted ratios) stays
 # inside the request's limits. Groups with fewer rows than MARGIN_MIN_ROWS
@@ -188,6 +195,12 @@ def candidate_id(label, placement):
     return f"{label}@{placement}"
 
 
+def load_key(label, device):
+    """Load time depends on the model and the device, not on thread settings,
+    so every CPU placement of one model shares a single load factor."""
+    return f"{label}@{device}"
+
+
 def observed_candidates(dataset, labels):
     """(label, placement) pairs with enough measured default-config runs."""
     defaults = dataset[
@@ -288,9 +301,17 @@ def predict(frame, twin, dataset, state):
     tpot_factor = []
     peak_factor = []
 
-    for identifier in frame["candidate"]:
+    # cache_hit differs per row: only the candidate already loaded can hit
+    # the prefix cache, so each row picks its own TTFT factor.
+    for identifier, cache_hit in zip(frame["candidate"], frame["cache_hit"]):
         correction = state["corrections"].get(identifier, {})
-        ttft_factor.append(correction.get("ttft_factor", 1.0))
+        if cache_hit:
+            ttft_factor.append(correction.get("ttft_factor_hit", 1.0))
+        else:
+            # Old state files only have the shared "ttft_factor".
+            ttft_factor.append(
+                correction.get("ttft_factor_miss", correction.get("ttft_factor", 1.0))
+            )
         tpot_factor.append(correction.get("tpot_factor", 1.0))
         peak_factor.append(correction.get("peak_factor", 1.0))
 
@@ -298,21 +319,36 @@ def predict(frame, twin, dataset, state):
     frame["pred_tpot_ms"] = frame["raw_tpot_ms"] * np.array(tpot_factor)
     frame["pred_peak_mib"] = frame["raw_peak_mib"] * np.array(peak_factor)
 
+    raw_load = []
+    estimated_load = []
     load = []
+    learned = state.get("load_corrections", {})
 
     for _, row in frame.iterrows():
-        if state["loaded_candidate"] == row["candidate"]:
-            load.append(0.0)
-        else:
-            load.append(
-                predict_load_ms(
-                    dataset,
-                    row["label"],
-                    row["device"],
-                    row["label"] in state["gpu_cache_warm"],
-                )
+        # The dataset's estimate is computed for every row, even a resident
+        # one: each real run reloads the model, so it is still needed to
+        # learn from that run.
+        raw = (
+            predict_load_ms(
+                dataset,
+                row["label"],
+                row["device"],
+                row["label"] in state["gpu_cache_warm"],
             )
+            if dataset is not None
+            else 0.0
+        )
+        factor = learned.get(
+            load_key(row["label"], row["device"]), {}
+        ).get("load_factor", 1.0)
 
+        raw_load.append(raw)
+        estimated_load.append(raw * factor)
+        # Nothing to load if this exact configuration is already resident.
+        load.append(0.0 if state["loaded_candidate"] == row["candidate"] else raw * factor)
+
+    frame["raw_load_ms"] = raw_load
+    frame["est_load_ms"] = estimated_load
     frame["pred_load_ms"] = load
     frame["pred_total_ms"] = (
         frame["pred_load_ms"]
@@ -590,6 +626,7 @@ def update_correction(
     actual_tpot_ms,
     raw_peak_mib=None,
     actual_peak_mib=None,
+    cache_hit=False,
 ):
     """Move the candidate's factors toward actual / raw-twin-prediction.
 
@@ -597,21 +634,42 @@ def update_correction(
     factor by CORRECTION_ALPHA of its error, a persistent bias is learned
     within a few requests, and each run's ratio is clipped first.
 
+    TTFT has two factors. A prefix-cache hit skips prompt processing, so its
+    TTFT is a different mechanism from a cache miss, not a scaled-down one.
+    Sharing one factor let cheap cache-hit runs drag down the predictions for
+    long cache-miss prompts. TPOT (decode) is the same either way and keeps
+    one shared factor, so it learns from every run.
+
     Peak-memory factor: same idea, but asymmetric. Measuring more memory than
     predicted is learned fast (PEAK_ALPHA_UNDER) because that is the OOM
     direction; measuring less is learned slowly (PEAK_ALPHA_OVER).
     """
     correction = state["corrections"].setdefault(
         candidate,
-        {"ttft_factor": 1.0, "tpot_factor": 1.0, "observations": 0},
+        {
+            "ttft_factor_hit": 1.0,
+            "ttft_factor_miss": 1.0,
+            "tpot_factor": 1.0,
+            "observations": 0,
+        },
     )
-    # State files written before the memory factor existed lack this key.
+    # State files written by older versions lack some keys.
     correction.setdefault("peak_factor", 1.0)
+    # Old files had one shared TTFT factor. It was learned mostly from cache
+    # misses, so it becomes the miss factor; the hit factor starts fresh.
+    correction.setdefault("ttft_factor_miss", correction.pop("ttft_factor", 1.0))
+    correction.setdefault("ttft_factor_hit", 1.0)
+
+    # Chosen once, before the loop, so the loop never overwrites factor_key.
+    ttft_key = "ttft_factor_hit" if cache_hit else "ttft_factor_miss"
 
     for factor_key, actual, raw in [
-        ("ttft_factor", actual_ttft_ms, raw_ttft_ms),
+        (ttft_key, actual_ttft_ms, raw_ttft_ms),
         ("tpot_factor", actual_tpot_ms, raw_tpot_ms),
     ]:
+        # None, 0 and 0.0 are all false: skip instead of dividing by zero.
+        if not raw or not actual:
+            continue
         correction[factor_key] = (
             (1 - CORRECTION_ALPHA) * correction[factor_key]
             + CORRECTION_ALPHA * clip_ratio(actual, raw)
@@ -630,6 +688,28 @@ def update_correction(
 
     correction["observations"] += 1
     return correction
+
+
+def update_load_correction(state, key, raw_load_ms, actual_load_ms):
+    """Move the load factor for one model+device toward actual / predicted.
+
+    Learned fast when a load is slower than we currently believe (that breaks
+    total-time promises) and slowly when faster.
+    """
+    loads = state.setdefault("load_corrections", {})
+    record = loads.setdefault(key, {"load_factor": 1.0, "observations": 0})
+
+    if raw_load_ms and actual_load_ms:
+        ratio = clip_ratio(actual_load_ms, raw_load_ms)
+        alpha = (
+            LOAD_ALPHA_UNDER
+            if ratio > record["load_factor"]
+            else LOAD_ALPHA_OVER
+        )
+        record["load_factor"] = (1 - alpha) * record["load_factor"] + alpha * ratio
+        record["observations"] += 1
+
+    return record
 
 
 def maybe_explore(frame, chosen, epsilon, rng):
@@ -684,6 +764,14 @@ def run_and_learn(choice, args, models, state):
         actual_tpot_ms=actual["tpot_ms_per_token"],
         raw_peak_mib=choice["raw_peak_mib"],
         actual_peak_mib=actual["sampled_peak_rss_mib"],
+        cache_hit=bool(choice["cache_hit"]),
+    )
+
+    load = update_load_correction(
+        state,
+        load_key(choice["label"], settings["device"]),
+        raw_load_ms=choice["raw_load_ms"],
+        actual_load_ms=actual["pipeline_construction_ms"],
     )
 
     state["loaded_candidate"] = choice["candidate"]
@@ -692,7 +780,9 @@ def run_and_learn(choice, args, models, state):
 
     print("\n            predicted    actual    error")
     for name, predicted, measured in [
-        ("load ms", choice["pred_load_ms"], actual["pipeline_construction_ms"]),
+        # A fresh process always reloads, so compare the load estimate even
+        # when the controller treated the model as already resident.
+        ("load ms", choice["est_load_ms"], actual["pipeline_construction_ms"]),
         ("TTFT ms", choice["pred_ttft_ms"], actual["ttft_ms"]),
         ("TPOT ms", choice["pred_tpot_ms"], actual["tpot_ms_per_token"]),
         ("peak MiB", choice["pred_peak_mib"], actual["sampled_peak_rss_mib"]),
@@ -702,10 +792,12 @@ def run_and_learn(choice, args, models, state):
 
     print(
         f"\nCorrection for {choice['candidate']}: "
-        f"TTFT x{correction['ttft_factor']:.3f}, "
+        f"TTFT {'hit' if choice['cache_hit'] else 'miss'} "
+        f"x{correction['ttft_factor_hit' if choice['cache_hit'] else 'ttft_factor_miss']:.3f}, "
         f"TPOT x{correction['tpot_factor']:.3f}, "
         f"memory x{correction['peak_factor']:.3f} "
-        f"({correction['observations']} observations)"
+        f"({correction['observations']} observations); "
+        f"load x{load['load_factor']:.3f}"
     )
 
     return actual

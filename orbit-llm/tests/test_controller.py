@@ -15,7 +15,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import orbit  # noqa: E402
-from evaluate_controller import BackgroundLoad, build_trace, judge  # noqa: E402
+from evaluate_controller import (  # noqa: E402
+    BackgroundLoad,
+    build_trace,
+    interleaved_schedule,
+    judge,
+    paired_comparison,
+)
 from twin_v0 import AnalyticalTwin, GroupedLinearLaw, noise_floor  # noqa: E402
 
 
@@ -246,7 +252,7 @@ def test_correction_learns_persistent_bias():
             actual_tpot_ms=50.0,
         )
 
-    assert correction["ttft_factor"] == pytest.approx(2.0, rel=0.01)
+    assert correction["ttft_factor_miss"] == pytest.approx(2.0, rel=0.01)
     assert correction["tpot_factor"] == pytest.approx(1.0)
     assert correction["observations"] == 15
 
@@ -258,7 +264,7 @@ def test_single_noisy_run_moves_correction_only_partly():
         state, "INT4@gpu", 100.0, 50.0, actual_ttft_ms=300.0, actual_tpot_ms=50.0
     )
 
-    assert correction["ttft_factor"] == pytest.approx(1 + orbit.CORRECTION_ALPHA * 2)
+    assert correction["ttft_factor_miss"] == pytest.approx(1 + orbit.CORRECTION_ALPHA * 2)
 
 
 def test_outlier_run_is_clipped_before_averaging():
@@ -270,7 +276,7 @@ def test_outlier_run_is_clipped_before_averaging():
         state, "INT4@gpu", 100.0, 50.0, actual_ttft_ms=1000.0, actual_tpot_ms=50.0
     )
 
-    assert correction["ttft_factor"] == pytest.approx(1.6)
+    assert correction["ttft_factor_miss"] == pytest.approx(1.6)
 
 
 def test_memory_underprediction_is_learned_faster_than_overprediction():
@@ -330,7 +336,7 @@ def test_predict_applies_learned_memory_factor():
             }
 
     frame = pd.DataFrame(
-        [{"candidate": "A", "label": "INT4", "device": "CPU", "output_tokens": 10}]
+        [{"candidate": "A", "label": "INT4", "device": "CPU", "output_tokens": 10, "cache_hit": 0}]
     )
     state = {
         "corrections": {"A": {"peak_factor": 1.5}},
@@ -744,3 +750,238 @@ def test_nearest_misses_lists_the_closest_candidates_with_reasons():
 
     assert list(misses["candidate"]) == ["nearest@gpu", "near@gpu"]
     assert (misses["violations"] == "ttft").all()
+
+
+# ---------------------------------------------------------------------------
+# Separate TTFT corrections for prefix-cache hits and misses
+
+
+def test_cache_hit_run_only_moves_the_hit_factor():
+    state = {"corrections": {}}
+
+    # 74 -> 20 ms: ratio 0.27 is clipped to 0.5; 0.7 * 1.0 + 0.3 * 0.5 = 0.85.
+    correction = orbit.update_correction(state, "A", 74, 50, 20, 50, cache_hit=True)
+
+    assert correction["ttft_factor_hit"] == pytest.approx(0.85)
+    assert correction["ttft_factor_miss"] == pytest.approx(1.0)
+
+
+def test_cache_miss_run_only_moves_the_miss_factor():
+    state = {"corrections": {}}
+    orbit.update_correction(state, "A", 74, 50, 20, 50, cache_hit=True)
+
+    correction = orbit.update_correction(state, "A", 3066, 50, 3614, 50)
+
+    assert correction["ttft_factor_miss"] == pytest.approx(0.7 + 0.3 * 3614 / 3066)
+    assert correction["ttft_factor_hit"] == pytest.approx(0.85)
+
+
+def test_tpot_is_shared_and_still_learned():
+    state = {"corrections": {}}
+
+    # Before the fix the loop wrote this ratio into the TTFT factor instead.
+    correction = orbit.update_correction(state, "A", 100, 50, 100, 75, cache_hit=True)
+
+    assert correction["tpot_factor"] == pytest.approx(0.7 + 0.3 * 1.5)
+    assert correction["ttft_factor_hit"] == pytest.approx(1.0)
+
+
+def test_zero_raw_prediction_is_skipped_not_divided_by():
+    correction = orbit.update_correction({"corrections": {}}, "A", 0, 50, 20, 50)
+
+    assert correction["ttft_factor_miss"] == pytest.approx(1.0)
+
+
+def test_old_shared_ttft_factor_becomes_the_miss_factor():
+    state = {"corrections": {"A": {"ttft_factor": 1.2, "tpot_factor": 1.1, "observations": 4}}}
+
+    correction = orbit.update_correction(state, "A", 100, 50, 100, 50)
+
+    # 0.7 * 1.2 + 0.3 * 1.0 = 1.14; the old key is gone, the hit factor is fresh.
+    assert correction["ttft_factor_miss"] == pytest.approx(1.14)
+    assert correction["ttft_factor_hit"] == pytest.approx(1.0)
+    assert "ttft_factor" not in correction
+
+
+class FlatTwin:
+    def predict(self, frame):
+        n = len(frame)
+        return {
+            "ttft_ms": np.full(n, 100.0),
+            "tpot_ms_per_token": np.full(n, 10.0),
+            "sampled_peak_rss_mib": np.full(n, 1000.0),
+        }
+
+
+def hit_and_miss_frame():
+    return pd.DataFrame(
+        {
+            "candidate": ["A", "A"],
+            "label": ["INT4", "INT4"],
+            "device": ["GPU", "GPU"],
+            "output_tokens": [10, 10],
+            "cache_hit": [0, 1],
+        }
+    )
+
+
+def test_predict_picks_the_ttft_factor_per_row():
+    state = {
+        "corrections": {"A": {"ttft_factor_miss": 1.2, "ttft_factor_hit": 0.5}},
+        "loaded_candidate": "A",
+        "gpu_cache_warm": [],
+    }
+
+    result = orbit.predict(hit_and_miss_frame(), FlatTwin(), None, state)
+
+    assert result["pred_ttft_ms"].tolist() == pytest.approx([120.0, 50.0])
+
+
+def test_predict_reads_an_old_shared_factor_as_the_miss_factor():
+    state = {
+        "corrections": {"A": {"ttft_factor": 1.3}},
+        "loaded_candidate": "A",
+        "gpu_cache_warm": [],
+    }
+
+    result = orbit.predict(hit_and_miss_frame(), FlatTwin(), None, state)
+
+    assert result["pred_ttft_ms"].tolist() == pytest.approx([130.0, 100.0])
+
+
+# ---------------------------------------------------------------------------
+# Online load-time correction
+
+
+def test_slow_loads_are_learned_fast_and_build_on_each_other():
+    state = {}
+
+    first = orbit.update_load_correction(state, "Q3B-INT4@GPU", 4669, 7154)
+    # 7154 / 4669 = 1.532 > 1.0, alpha 0.6: 0.4 * 1.0 + 0.6 * 1.532 = 1.319
+    assert first["load_factor"] == pytest.approx(0.4 + 0.6 * 7154 / 4669)
+    # Save the number now: the returned record is the same dictionary that
+    # the next call will change, not a copy.
+    after_first = first["load_factor"]
+
+    second = orbit.update_load_correction(state, "Q3B-INT4@GPU", 4669, 7201)
+    # 1.542 > 1.319 (the CURRENT factor), so still alpha 0.6 -> 1.453
+    assert second["load_factor"] == pytest.approx(0.4 * after_first + 0.6 * 7201 / 4669)
+    assert second is first
+    assert second["observations"] == 2
+
+
+def test_fast_load_is_learned_slowly():
+    record = orbit.update_load_correction({}, "INT4@GPU", 1000, 800)
+
+    assert record["load_factor"] == pytest.approx(0.8 + 0.2 * 0.8)
+
+
+def test_missing_load_values_are_skipped_but_a_record_is_returned():
+    record = orbit.update_load_correction({}, "INT4@GPU", 0, 800)
+
+    assert record == {"load_factor": 1.0, "observations": 0}
+
+
+def test_load_corrections_live_apart_from_candidate_corrections():
+    state = {"corrections": {}}
+
+    orbit.update_load_correction(state, "INT4@GPU", 1000, 1500)
+
+    assert state["corrections"] == {}
+    assert "INT4@GPU" in state["load_corrections"]
+
+
+def test_load_key_ignores_thread_settings():
+    assert orbit.load_key("INT4", "CPU") == "INT4@CPU"
+
+
+def test_predict_applies_the_learned_load_factor_unless_resident():
+    dataset = pd.DataFrame(
+        {
+            "precision": ["INT4"] * 3,
+            "device": ["GPU"] * 3,
+            "model_cache": [True] * 3,
+            "load_ms": [2000.0, 2000.0, 2000.0],
+        }
+    )
+    frame = pd.DataFrame(
+        {
+            "candidate": ["INT4@gpu", "INT4@gpu_other"],
+            "label": ["INT4", "INT4"],
+            "device": ["GPU", "GPU"],
+            "output_tokens": [10, 10],
+            "cache_hit": [0, 0],
+        }
+    )
+    state = {
+        "corrections": {},
+        "loaded_candidate": "INT4@gpu",
+        "gpu_cache_warm": ["INT4"],
+        "load_corrections": {"INT4@GPU": {"load_factor": 1.5, "observations": 3}},
+    }
+
+    result = orbit.predict(frame, FlatTwin(), dataset, state)
+
+    assert result["raw_load_ms"].tolist() == pytest.approx([2000.0, 2000.0])
+    assert result["est_load_ms"].tolist() == pytest.approx([3000.0, 3000.0])
+    # The resident candidate loads nothing; the other one pays the learned estimate.
+    assert result["pred_load_ms"].tolist() == pytest.approx([0.0, 3000.0])
+
+
+# ---------------------------------------------------------------------------
+# Interleaved (paired) evaluation
+
+
+def test_every_request_is_run_by_every_system_once():
+    trace = build_trace(repeats=1, busy_repeats=0)
+    plan = interleaved_schedule(trace, ["a", "b", "c"], seed=0)
+
+    assert len(plan) == 15  # 5 requests x 3 systems
+    for number in range(1, 6):
+        runs = [system for index, _, system in plan if index == number]
+        assert sorted(runs) == ["a", "b", "c"]
+
+
+def test_requests_stay_in_order_and_systems_are_grouped_per_request():
+    trace = build_trace(repeats=1, busy_repeats=0)
+    plan = interleaved_schedule(trace, ["a", "b", "c"], seed=0)
+
+    assert [index for index, _, _ in plan] == [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5]
+    assert plan[0][1].scenario == "short_chat"
+    assert plan[3][1].scenario == "long_document"
+
+
+def test_same_seed_same_plan_and_the_order_actually_varies():
+    trace = build_trace(repeats=4, busy_repeats=0)
+    systems = ["baseline", "static", "orbit", "orbit_robust"]
+
+    first = interleaved_schedule(trace, systems, seed=7)
+    second = interleaved_schedule(trace, systems, seed=7)
+    orders = {
+        tuple(system for index, _, system in first if index == number)
+        for number in range(1, len(trace) + 1)
+    }
+
+    assert [(i, s) for i, _, s in first] == [(i, s) for i, _, s in second]
+    assert len(orders) > 1  # not the same fixed order every time
+
+
+def test_schedule_does_not_shuffle_the_callers_list():
+    systems = ["a", "b", "c"]
+
+    interleaved_schedule(build_trace(repeats=2, busy_repeats=0), systems, seed=1)
+
+    assert systems == ["a", "b", "c"]
+
+
+def test_paired_comparison_counts_only_disagreements():
+    frame = pd.DataFrame(
+        {
+            "index": [1, 1, 2, 2, 3, 3, 4, 4],
+            "system": ["orbit", "static"] * 4,
+            # request 1: only orbit kept; 2: only static kept; 3: both kept; 4: both broke
+            "violated": [False, True, True, False, False, False, True, True],
+        }
+    )
+
+    assert paired_comparison(frame, "orbit", "static") == (1, 1, 1, 1)
