@@ -1,0 +1,26 @@
+{
+    "name": "gpu_contention_busy",
+  "description": "GPU contention test, busy: same as gpu_contention_calm, while noise_gpu.py keeps the iGPU busy running another LLM.",
+  "models": {
+    "INT8": "C:/Users/parva/tinyllama-int8",
+    "INT4": "C:/Users/parva/tinyllama-int4"
+  },
+  "base": {
+    "output_tokens": 64,
+    "warmup": 1,
+    "runs": 3,
+    "prompt_mode": "cold"
+  },
+  "variants": {
+    "cpu_auto": {},
+    "cpu_pcore": {"cores": "pcore"},
+    "gpu": {"device": "GPU"}
+  },
+  "grid": {
+    "label": ["INT8", "INT4"],
+    "prompt_tokens": [128, 1024]
+  },
+  "rounds": 2,
+  "seed": 7,
+  "cooldown_seconds": 3
+}
