@@ -128,6 +128,12 @@ Options parse_arguments(int argc, char* argv[]) {
     if (options.prefix_caching != "on" && options.prefix_caching != "off") {
         throw std::invalid_argument("--prefix-caching must be on or off");
     }
+    if (!options.evict.empty() && options.prefix_caching == "on") {
+        // On GenAI 2026.3 the two features crash together once eviction starts:
+        // "blocks across layers must be freed simultaneously" (Finding 21).
+        std::cerr << "Note: cache eviction cannot run with prefix caching; prefix caching turned off.\n";
+        options.prefix_caching = "off";
+    }
     if (options.device != "CPU" && (options.cores != "any" || options.kv_precision != "default")) {
         // Explicit KV precision crashes the GPU paged-attention path on
         // GenAI 2026.3 (FINDINGS Finding 17).

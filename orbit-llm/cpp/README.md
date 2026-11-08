@@ -1,3 +1,40 @@
+# C++ programs (OpenVINO GenAI C++ API)
+
+| Program | Purpose |
+|---|---|
+| `orbit_chat` | Local multi-turn chat application (the deployment) |
+| `orbit_run` | One measured configuration per process; used by all experiments |
+| `orbit_worker` | Long-lived process that keeps models loaded and serves requests over stdin/stdout |
+
+All three are built by the same CMake project (see Build below).
+
+## orbit_chat — local chat application
+
+```powershell
+$env:Path = "C:\Users\parva\venv\Lib\site-packages\openvino\libs;$env:Path"
+.\cpp\build\Release\orbit_chat.exe --model C:\Users\parva\tinyllama-int4
+```
+
+- **Chat:** multi-turn with the model's chat template (`ov::genai::ChatHistory`) and
+  streamed output.
+- **Per-turn metrics:** prompt tokens (whole conversation), answer tokens, TTFT, tok/s,
+  working set and committed memory.
+- **Commands:** `/reset`, `/stats`, `/help`, `/exit`.
+
+| Option | Values | Controls |
+|---|---|---|
+| `--device` | `CPU`, `GPU` | Inference device |
+| `--cores` | `any`, `pcore`, `ecore` | CPU core type (CPU only) |
+| `--cache-dir` | path | Compiled-model cache; use it for the GPU |
+| `--prefix-caching` | `on` (default), `off` | Reuse the KV cache of earlier turns |
+| `--kv-precision` | `default`, `f32`, `f16`, `u8` | KV-cache element type (CPU only; explicit precision crashes the GPU path on GenAI 2026.3) |
+| `--evict` | `START:RECENT:MAX` | KV-cache eviction budget in tokens (multiples of the block size: 32 on CPU, 16 on GPU) |
+| `--max-new-tokens`, `--temperature`, `--repetition-penalty`, `--system` | | Generation settings |
+| `--script FILE`, `--json-out FILE` | | Replay a conversation non-interactively and save per-turn metrics |
+
+It warns at start-up when the laptop is on battery: inference runs ~10× slower there
+(FINDINGS Finding 20).
+
 # orbit_run — C++ executor
 
 `orbit_run` runs one controlled OpenVINO GenAI benchmark configuration through the

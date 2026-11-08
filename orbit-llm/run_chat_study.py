@@ -24,12 +24,15 @@ from run_experiment import prevent_sleep, require_ac_power
 ORBIT_CHAT = Path("cpp/build/Release/orbit_chat.exe")
 MODELS_JSON = Path("models.json")
 
-# Eviction settings in tokens: START:RECENT:MAX, multiples of the KV block
-# size (32 on CPU, 16 on GPU). Empty = no eviction.
+# name: (eviction START:RECENT:MAX in tokens, prefix caching).
+# Sizes are multiples of the KV block size (32 on CPU, 16 on GPU).
+# Eviction cannot run with prefix caching on GenAI 2026.3: the pipeline throws
+# "blocks across layers must be freed simultaneously" (FINDINGS Finding 21).
 EVICTION = {
-    "none": "",
-    "evict_512": "32:128:512",
-    "evict_256": "32:64:256",
+    "prefix_on": ("", "on"),
+    "prefix_off": ("", "off"),
+    "evict_512": ("32:128:512", "off"),
+    "evict_256": ("32:64:256", "off"),
 }
 
 RECALL_KEYWORDS = ["ORBIT", "47"]
@@ -61,8 +64,10 @@ def run_conversation(model_path, args, eviction):
         "--repetition-penalty", "1.1",
         "--json-out", str(temporary),
     ]
-    if EVICTION[eviction]:
-        command += ["--evict", EVICTION[eviction]]
+    evict_sizes, prefix_caching = EVICTION[eviction]
+    command += ["--prefix-caching", prefix_caching]
+    if evict_sizes:
+        command += ["--evict", evict_sizes]
     if args.device == "GPU":
         command += ["--cache-dir", "ov_cache/gpu"]
 

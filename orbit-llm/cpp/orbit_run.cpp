@@ -505,12 +505,32 @@ ov::AnyMap build_pipeline_properties(const Options& options) {
     return properties;
 }
 
+// A prompt id is a variant name, optionally followed by "#tag": "run_2#17".
+// The tag is written at the very start of the text, so two tagged prompts
+// differ from their first tokens on and can never share a prefix-cache block.
+// That lets every request in an evaluation get its own prompt, while a
+// repeated id (the same conversation) still hits the cache on purpose.
+std::pair<std::string, std::string> split_prompt_id(const std::string& prompt_id) {
+    const auto hash = prompt_id.find('#');
+    if (hash == std::string::npos) {
+        return {prompt_id, ""};
+    }
+    return {prompt_id.substr(0, hash), prompt_id.substr(hash + 1)};
+}
+
+bool is_known_prompt_id(const std::string& prompt_id) {
+    const auto [variant, tag] = split_prompt_id(prompt_id);
+    const bool tag_ok = prompt_id.find('#') == std::string::npos || !tag.empty();
+    return PROMPT_VARIANTS.count(variant) == 1 && tag_ok;
+}
+
 ov::genai::TokenizedInputs create_exact_token_input(ov::genai::Tokenizer& tokenizer,
                                                     std::size_t target_tokens,
                                                     const std::string& prompt_id) {
-    const auto& [opening, body] = PROMPT_VARIANTS.at(prompt_id);
+    const auto [variant, tag] = split_prompt_id(prompt_id);
+    const auto& [opening, body] = PROMPT_VARIANTS.at(variant);
 
-    std::string text = opening;
+    std::string text = tag.empty() ? opening : "Request " + tag + ". " + opening;
     for (std::size_t repeat = 0; repeat < target_tokens + 10; ++repeat) {
         text += body;
     }
@@ -578,6 +598,9 @@ JsonRow make_base_row(const Options& options) {
 
 }  // namespace
 
+// orbit_worker.cpp includes this file for its helpers and defines
+// ORBIT_RUN_NO_MAIN so this main() is left out.
+#ifndef ORBIT_RUN_NO_MAIN
 int main(int argc, char* argv[]) {
     Options options;
     try {
@@ -740,3 +763,4 @@ int main(int argc, char* argv[]) {
 
     return failed_runs == 0 ? 0 : 1;
 }
+#endif  // ORBIT_RUN_NO_MAIN

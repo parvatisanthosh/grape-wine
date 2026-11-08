@@ -249,6 +249,35 @@ def predict_load_ms(dataset, label, device, cache_warm):
     return float(rows["load_ms"].median())
 
 
+def is_resident(state, identifier):
+    """Is this configuration loaded right now, so it costs no load time?
+
+    With a persistent worker the evaluation keeps state["resident"], the list
+    of every loaded configuration (it can be more than one). Without it (one
+    fresh process per run) only the last configuration that ran counts, which
+    is the simulated residency used before the worker existed.
+    """
+    if "resident" in state:
+        return identifier in state["resident"]
+    return state.get("loaded_candidate") == identifier
+
+
+def prefix_cached(state, identifier, args):
+    """Can this request hit the prefix cache on this configuration?
+
+    Only a request that repeats an earlier prefix can hit, and only on a
+    pipeline that is still loaded. With a persistent worker it must also be
+    the same prompt that pipeline has already seen (state["cached_prompts"]);
+    unloading a model throws its cache away, so that list is emptied then.
+    """
+    if not args.repeat_prefix or not is_resident(state, identifier):
+        return False
+    if "resident" not in state:
+        return True  # simulated: "repeat" mode runs the prompt twice in one process
+    prompt_key = getattr(args, "prompt_key", None)
+    return prompt_key in state.get("cached_prompts", {}).get(identifier, [])
+
+
 def build_candidate_frame(args, candidates, state, machine):
     rows = []
 
@@ -258,10 +287,7 @@ def build_candidate_frame(args, candidates, state, machine):
 
         # A prefix-cache hit is only possible on the pipeline that already
         # holds the prefix; switching configuration loses the cache.
-        cache_hit = int(
-            args.repeat_prefix
-            and state["loaded_candidate"] == identifier
-        )
+        cache_hit = int(prefix_cached(state, identifier, args))
 
         rows.append(
             {
@@ -345,7 +371,7 @@ def predict(frame, twin, dataset, state):
         raw_load.append(raw)
         estimated_load.append(raw * factor)
         # Nothing to load if this exact configuration is already resident.
-        load.append(0.0 if state["loaded_candidate"] == row["candidate"] else raw * factor)
+        load.append(0.0 if is_resident(state, row["candidate"]) else raw * factor)
 
     frame["raw_load_ms"] = raw_load
     frame["est_load_ms"] = estimated_load
@@ -730,7 +756,15 @@ def maybe_explore(frame, chosen, epsilon, rng):
     return others.iloc[int(rng.integers(len(others)))]
 
 
-def run_and_learn(choice, args, models, state):
+def run_and_learn(choice, args, models, state, executor=None):
+    """Run the chosen configuration, then learn from how it really went.
+
+    executor(choice, args) runs the request somewhere else and returns the
+    measured row; the evaluation passes one that uses a persistent worker.
+    Without it a fresh orbit_run.exe is started, which always loads the model.
+    A row whose pipeline_construction_ms is None loaded nothing (the model was
+    already resident), so there is no load time to learn from.
+    """
     settings = PLACEMENTS[choice["placement"]]
 
     configuration = {
@@ -748,31 +782,46 @@ def run_and_learn(choice, args, models, state):
         configuration["cache_dir"] = GPU_CACHE_DIR
 
     print(f"\nRunning {choice['candidate']} ...", flush=True)
-    rows = run_configuration(models[choice["label"]]["path"], configuration)
-    actual = rows[-1]
+    if executor is None:
+        actual = run_configuration(models[choice["label"]]["path"], configuration)[-1]
+    else:
+        actual = executor(choice, args)
 
     if actual["status"] != "success":
         print(f"Run failed: {actual['status']} {actual.get('error', '')}")
         return actual
+        # The first request after a load pays a one-time GPU first-inference
+    # cost the twin doesn't model; learning from it inflates the TTFT factor.
+    first_after_load = actual.get("generation_index") == 1
+
+    # With other models loaded too, the process memory includes them, so the
+    # measurement isn't this candidate's peak alone.
+    loaded = actual.get("loaded_slots") or ""
+    others_loaded = len(loaded.split(",")) > 1
+
+    ttft_to_learn = None if first_after_load else actual["ttft_ms"]
+    peak_to_learn = None if others_loaded else actual["sampled_peak_rss_mib"]
 
     correction = update_correction(
         state,
         choice["candidate"],
         raw_ttft_ms=choice["raw_ttft_ms"],
         raw_tpot_ms=choice["raw_tpot_ms"],
-        actual_ttft_ms=actual["ttft_ms"],
+        actual_ttft_ms=ttft_to_learn,
         actual_tpot_ms=actual["tpot_ms_per_token"],
         raw_peak_mib=choice["raw_peak_mib"],
-        actual_peak_mib=actual["sampled_peak_rss_mib"],
+        actual_peak_mib=peak_to_learn,
         cache_hit=bool(choice["cache_hit"]),
     )
 
-    load = update_load_correction(
-        state,
-        load_key(choice["label"], settings["device"]),
-        raw_load_ms=choice["raw_load_ms"],
-        actual_load_ms=actual["pipeline_construction_ms"],
-    )
+    key = load_key(choice["label"], settings["device"])
+    actual_load_ms = actual.get("pipeline_construction_ms")
+    if actual_load_ms is not None:
+        load = update_load_correction(
+            state, key, raw_load_ms=choice["raw_load_ms"], actual_load_ms=actual_load_ms
+        )
+    else:
+        load = state.get("load_corrections", {}).get(key, {"load_factor": 1.0})
 
     state["loaded_candidate"] = choice["candidate"]
     if settings["device"] == "GPU" and choice["label"] not in state["gpu_cache_warm"]:
@@ -782,11 +831,13 @@ def run_and_learn(choice, args, models, state):
     for name, predicted, measured in [
         # A fresh process always reloads, so compare the load estimate even
         # when the controller treated the model as already resident.
-        ("load ms", choice["est_load_ms"], actual["pipeline_construction_ms"]),
+        ("load ms", choice["est_load_ms"], actual_load_ms),
         ("TTFT ms", choice["pred_ttft_ms"], actual["ttft_ms"]),
         ("TPOT ms", choice["pred_tpot_ms"], actual["tpot_ms_per_token"]),
         ("peak MiB", choice["pred_peak_mib"], actual["sampled_peak_rss_mib"]),
     ]:
+        if measured is None:
+            continue  # nothing was loaded (already resident)
         error = 100 * (predicted - measured) / measured
         print(f"  {name:<9}{predicted:>10.1f}{measured:>10.1f}{error:>+8.1f}%")
 

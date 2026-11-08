@@ -2,3 +2,4 @@ __pycache__/
 cpp/build/
 ov_cache/
 *.errors.txt
+data/raw/

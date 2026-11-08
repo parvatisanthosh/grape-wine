@@ -21,6 +21,8 @@ from evaluate_controller import (  # noqa: E402
     interleaved_schedule,
     judge,
     paired_comparison,
+    summarize_matched,
+    summarize_systems,
 )
 from twin_v0 import AnalyticalTwin, GroupedLinearLaw, noise_floor  # noqa: E402
 
@@ -405,11 +407,11 @@ def measured_row(**overrides):
     return row
 
 
-def test_load_time_charged_only_on_switch():
+def test_load_time_is_added_to_the_total():
     quality = {"INT4": {"bits_per_byte": 0.9}}
 
-    switched = judge(request(), measured_row(), switched=True, quality=quality)
-    stayed = judge(request(), measured_row(), switched=False, quality=quality)
+    switched = judge(request(), measured_row(), load_ms=2000.0, quality=quality)
+    stayed = judge(request(), measured_row(), load_ms=0.0, quality=quality)
 
     assert switched["total_ms"] == 5000.0
     assert stayed["total_ms"] == 3000.0
@@ -419,7 +421,7 @@ def test_judge_reports_each_violation():
     verdict = judge(
         request(max_ttft_ms=400, max_total_ms=4000, max_memory_mib=1000),
         measured_row(),
-        switched=True,
+        load_ms=2000.0,
         quality={},
     )
 
@@ -428,10 +430,48 @@ def test_judge_reports_each_violation():
 
 
 def test_failed_run_is_a_violation():
-    verdict = judge(request(), {"status": "warmup_failed"}, switched=True, quality={})
+    verdict = judge(request(), {"status": "warmup_failed"}, load_ms=0.0, quality={})
 
     assert verdict["violated"]
     assert verdict["violations"] == "failed"
+
+
+def evaluation_frame():
+    """Request 2 takes 9 s on static; orbit refuses it, so only request 1 is shared."""
+    base = {"peak_mib": 100.0, "bits_per_byte": 0.7, "switched": False}
+    return pd.DataFrame(
+        [
+            {**base, "system": "orbit", "index": 1, "status": "success",
+             "violated": False, "ttft_ms": 1000.0, "total_ms": 2000.0},
+            {**base, "system": "static", "index": 1, "status": "success",
+             "violated": False, "ttft_ms": 1000.0, "total_ms": 2000.0},
+            {"system": "orbit", "index": 2, "status": "no_feasible_candidate",
+             "violated": True, "switched": False},
+            {**base, "system": "static", "index": 2, "status": "success",
+             "violated": True, "ttft_ms": 9000.0, "total_ms": 12000.0},
+        ]
+    )
+
+
+def test_refusal_counts_as_violation_but_not_as_served():
+    summary = summarize_systems(evaluation_frame())
+    assert summary.loc["orbit", "served"] == 1
+    assert summary.loc["orbit", "refused"] == 1
+    assert summary.loc["orbit", "sla_violation_rate"] == 50
+    assert summary.loc["static", "refused"] == 0
+
+
+def test_matched_summary_ignores_requests_a_system_refused():
+    matched = summarize_matched(evaluation_frame())
+    assert matched.loc["orbit", "requests"] == 1
+    assert matched.loc["static", "requests"] == 1
+    assert matched.loc["orbit", "mean_ttft_s"] == matched.loc["static", "mean_ttft_s"] == 1.0
+
+
+def test_matched_summary_needs_two_systems_with_a_shared_request():
+    frame = evaluation_frame()
+    assert summarize_matched(frame[frame["system"] == "static"]) is None
+    assert summarize_matched(frame[frame["index"] == 2]) is None
 
 
 def test_trace_has_calm_phase_then_busy_phase():

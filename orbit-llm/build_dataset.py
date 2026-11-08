@@ -78,6 +78,11 @@ def load_rows():
 
 def normalize(frame):
     frame = frame[frame["status"] == "success"].copy()
+        # Rows from the persistent worker are left out (they carry a "command").
+    # load/unload replies are not generation runs, and a worker generation
+    # can hit the prefix cache across requests, which prompt_mode cannot say.
+    if "command" in frame:
+        frame = frame[frame["command"].isna()].copy()
 
     frame["precision"] = frame["label"]
     frame["prompt_tokens"] = frame["requested_input_tokens"].astype(int)

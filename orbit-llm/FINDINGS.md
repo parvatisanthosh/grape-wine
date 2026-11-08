@@ -677,3 +677,184 @@ The Twin was re-run on the extended dataset: 557 runs, 94 configurations, now in
   its training data, the mechanism-based Twin is more trustworthy, and it is explainable.
   `orbit.py` uses the analytical Twin. The GBM remains slightly better on TPOT within the
   training distribution.
+
+---
+
+## Phase 7 — Deployment and real-world factors
+
+### Finding 20 — On battery, inference is ~10× slower
+
+The same scripted 4-turn chat (TinyLlama INT4, CPU, `orbit_chat`) was run while the laptop
+was unplugged, at 29% battery on the Balanced power plan. Raw rows:
+`results/chat/prefix_cache_*_BATTERY.jsonl`.
+
+| | On battery | On AC (Phase 4/5 medians) |
+|---|---|---|
+| TPOT | 350–540 ms | ~46 ms |
+| TTFT, 26-token cold prompt | ~31 s | ~0.3 s |
+
+- Even so, prefix caching still worked: turn 3 TTFT was 3.3 s with caching on and 25.4 s
+  with it off.
+- **Action:** `orbit_run` and `orbit_chat` now record `on_ac_power` and `battery_percent`.
+  `orbit_chat` warns at start-up on battery. `run_experiment.py` and `run_chat_study.py`
+  refuse to benchmark on battery unless `--allow-battery` is given.
+- For deployment, power source is a first-order performance factor on a laptop. A
+  controller should treat "on battery" as a different machine.
+
+### Finding 22 — Keeping models resident, and contention on the shared iGPU
+
+**Residency** (`residency_experiment.py`, `results/experiments/residency.jsonl`). INT4
+TinyLlama on the iGPU, 1024-token prompts:
+
+| | Fresh process per request (`orbit_run`) | Long-lived worker (`orbit_worker`) |
+|---|---|---|
+| TTFT | 2447 ms | **1650 ms** |
+| TPOT | 36.2 ms | **31.0 ms** |
+
+- In the worker, a load costs 3.45 s for INT4 TinyLlama and 8.6 s for Qwen-3B INT4 (GPU),
+  paid only when the model changes.
+- A resident model is faster per request *and* avoids the reload. A real deployment
+  should keep the model loaded.
+
+**GPU contention** (`plans/gpu_contention_{calm,busy}.json`). A second LLM generated
+continuously on the iGPU (`noise_gpu.py`) during the "busy" runs. Medians, n = 6:
+
+| INT4, 1024-token prompt | Calm TTFT / TPOT | Busy TTFT / TPOT |
+|---|---|---|
+| CPU default | 12.8 s / 82 ms | 23.6 s / 159 ms |
+| CPU P-cores | 10.3 s / 54 ms | 16.5 s / 123 ms |
+| iGPU | **1.5 s / 29 ms** | **2.5 s / 47 ms** |
+
+- Contention slows the GPU path 1.6–2.1×, but the GPU still beats every CPU
+  configuration.
+- The CPU paths also slow by ~1.6–2.3× even though the noise ran on the GPU. The iGPU
+  shares system memory bandwidth (and host-side CPU work) with the CPU, so on an
+  integrated GPU there is no fully isolated device.
+
+### Finding 21 — Cache eviction: no benefit in chat, and it crashes with prefix caching
+
+`run_chat_study.py` replays `conversations/long_recall.txt` through `orbit_chat`: 12 turns,
+80-token answers. Turn 1 states two facts, and turn 12 asks for them back. Raw rows:
+`results/chat_eviction.jsonl`. All runs on AC power.
+
+- **Prefix caching + eviction crash.** With both on, generation fails once eviction begins:
+  `Check 'is_all_free' failed ... blocks across layers must be freed simultaneously`
+  (`block_manager.hpp:371`). It happened after 3 turns at `32:64:256` and 5 turns at
+  `32:128:512`, on CPU and GPU. Rows: `results/chat/eviction_with_prefix_caching_CRASHED.jsonl`.
+  Draft issue: `notes/upstream_issue_eviction_prefix_caching.md`. `orbit_chat` now turns
+  prefix caching off when `--evict` is given.
+- **Results at turn 12** (prompt ~1000–1200 tokens):
+
+| Model | Configuration | TTFT | Final RSS | TPOT, turns 9–12 | Recall |
+|---|---|---|---|---|---|
+| Qwen-3B, GPU | prefix on | 446 ms | 2524 MiB | 55.6 ms | yes |
+| | prefix off | 5389 ms | 2604 MiB | 57.6 ms | yes |
+| | evict 512 | 4979 ms | 2847 MiB | 57.9 ms | yes |
+| | evict 256 | 5218 ms | 2844 MiB | 65.1 ms | yes |
+| TinyLlama INT4, CPU | prefix on | 338 ms | 1337 MiB | 53.3 ms | no |
+| | prefix off | 7753 ms | 1494 MiB | 49.8 ms | no |
+| | evict 512 | 7700 ms | 1500 MiB | 50.2 ms | no |
+| | evict 256 | 7650 ms | 1502 MiB | 47.5 ms | no |
+
+- **Prefix caching is the feature that matters for chat:** 12–23× faster TTFT at turn 12,
+  and less memory, because only the new tokens need prefill activations.
+- **Eviction gave no gain.** Each turn still prefills the whole prompt, and eviction acts
+  during generation. With 80-token answers and a KV cache of only ~15–40 MiB at this
+  length, there is little for it to save. On the GPU it used ~240 MiB more.
+- **Recall:** Qwen recalled both facts under every budget, but that does not prove the
+  facts' tokens were retained: the first answer token sees the whole prompt, and eviction
+  keeps high-attention blocks. TinyLlama's failure is the model's, since it fails with
+  eviction off too.
+- **Not tested:** very long single generations, which is what eviction is designed for.
+
+### Finding 23 — Quantization costs almost no quality
+
+`quality_eval.py` measures bits per byte (BPB) on a fixed 34 KB corpus of OpenVINO GenAI
+documentation and Python code (`quality/corpus/`). BPB is the model's surprise at real
+text. Lower is better, and normalizing by bytes makes it comparable across tokenizers.
+Results: `results/quality.json`.
+
+| Model | BPB | Prose | Code |
+|---|---|---|---|
+| TinyLlama FP16 | 0.6922 | 0.8709 | 0.6234 |
+| TinyLlama INT8 | 0.6922 | 0.8709 | 0.6233 |
+| TinyLlama INT4 | 0.7017 | 0.8790 | 0.6333 |
+| Qwen2.5-Coder-3B INT4 | 0.5521 | 0.7422 | 0.4788 |
+
+- INT8 shows no measurable loss against FP16, and INT4 is 1.4% worse.
+- Model size matters far more than precision: 3B at INT4 is 20% better than 1.1B at FP16.
+- BPB is a proxy for model quality, not a measure of task accuracy. The corpus is
+  technical English and Python, which favours a code-focused model such as Qwen-Coder.
+
+### Finding 24 — The default prefix cache keeps only the latest prompt, and the ORBIT table was wrong
+
+**The ORBIT table compared different requests.** ORBIT refused 6 of 24 requests, and those
+rows were left out of its means but stayed in static's. On the 18 requests both served,
+mean TTFT is 1.75 s vs 1.74 s, not 1.75 s vs 2.35 s. Outcomes matched on 22 of 24 requests,
+and ORBIT chose static's configuration for 15 of the 18 it served, so more requests from
+these scenarios would not separate them. Source: `results/evaluation_runs_worker.jsonl`,
+excluding its first 9 rows, which are an earlier partial run. That file has no refusal
+rows, because refusals were not logged then. `evaluate_controller.py` now logs refusals
+and compares systems only on requests they all served.
+
+**Follow-ups never hit the prefix cache.** All 6 static follow-ups took 3.8–4.5 s, about
+the same as a cold 1920-token prompt, although the log says `cache_hit: true`. That field
+records only that the prompt had been sent before.
+
+`prefix_overwrite_test.py` sends prompts through one `orbit_worker` pipeline (TinyLlama
+INT4, iGPU, 1920-token prompts). TTFT in ms, 1 repeat:
+
+| Step | Dynamic pool (default) | Fixed 1 GB pool |
+|---|---|---|
+| A, first time | 3995 | 3002 |
+| A, immediate repeat | 22 | 19 |
+| B, another 1920-token prompt | 2421 | 2403 |
+| A, after B | **2411** | **21** |
+| C, a 64-token prompt | 158 | 156 |
+| A, after C | **2408** | **22** |
+
+- This run was on battery, so it shows the effect, not final numbers. Raw rows:
+  `results/chat/prefix_overwrite_BATTERY.jsonl`.
+- In the default dynamic pool, any request between two repeats loses the prefix, even a
+  64-token one. A fixed pool keeps it, and a repeat is then about 115× faster.
+- Likely mechanism: blocks freed by a finished request can be reused, least recently used
+  first (`block_manager.hpp:143`). If matching runs from the start of the prompt, losing
+  the first blocks would lose the whole prefix. That last step is an inference.
+- Chat in `orbit_chat` is not affected while one conversation runs, because each turn
+  extends the same prefix. Several conversations sharing one pipeline would be.
+- ORBIT also refused every follow-up, so it never warmed its own cache.
+
+### Finding 25 — Task-level quality of the 3B model: INT4 shows no detectable loss
+
+`colab/humaneval_quality.ipynb` generated answers to all 164 HumanEval problems with
+Qwen2.5-Coder-3B at FP16, INT8 and INT4, then ran the official tests. The scoring harness
+had to pass every official solution before the notebook would score the models. Raw rows:
+`results/quality_humaneval/`. Summary: `python summarize_humaneval.py`.
+
+Method: greedy decoding, up to 512 new tokens, paged attention, `f32` execution precision,
+default CPU KV cache precision, on a Colab CPU with OpenVINO 2026.3. Model-written code ran
+only after Google Drive was unmounted, in a separate process with time, memory and file
+limits.
+
+| Model | Passed | 95% CI | Failed | Hit token limit |
+|---|---|---|---|---|
+| FP16 | 137/164 (83.5%) | 77.1–88.4% | 27 | 2 |
+| INT8 | 137/164 (83.5%) | 77.1–88.4% | 27 | 2 |
+| INT4 | 135/164 (82.3%) | 75.8–87.4% | 29 | 3 |
+
+| Comparison | Only first passed | Only second passed | Difference, 95% CI | McNemar p | Identical answers |
+|---|---|---|---|---|---|
+| FP16 vs INT8 | 2 | 2 | −2.4 to +2.4 points | 1.000 | 137 |
+| FP16 vs INT4 | 8 | 6 | −3.2 to +5.7 points | 0.791 | 47 |
+| INT8 vs INT4 | 9 | 7 | −3.6 to +6.0 points | 0.804 | 44 |
+
+- **INT4 keeps the task-level quality** within this test's resolution. The data rules out
+  a loss above about 5.7 points, not a small one.
+- **Agrees with bits per byte:** on TinyLlama, INT8 matched FP16 and INT4 was 1.4% worse.
+- **INT4 changes answers much more than INT8 does.** It matched FP16 exactly on 47 problems
+  against INT8's 137, yet the pass rate barely moved. Greedy output similarity would
+  overstate the practical damage, so pass/fail is the better measure here.
+- The INT4 model was the same file as the laptop's: the Hugging Face commit and the
+  SHA-256 of `openvino_model.bin` match. Colab's tokens/s are not used anywhere, because
+  the models ran in separate sessions and possibly on different hardware.
+- Pass rates depend on this prompt, so they are not comparable with published scores.

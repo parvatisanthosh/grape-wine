@@ -33,6 +33,18 @@ scenarios are repeated while background processes keep several CPU cores
 busy, like a browser or a video call would. The busy phase is where a
 fixed configuration cannot adapt and ORBIT's online correction should
 show its value. Every system faces the same load.
+
+Executors (--executor)
+- fresh:  every request starts a new orbit_run.exe, so every request really
+  loads the model; residency is simulated by charging the load only when a
+  system switches configuration. This was the only mode before the worker.
+- worker: every system owns one persistent orbit_worker.exe that keeps models
+  loaded (ORBIT up to --max-resident of them, least recently used evicted
+  first). Load and unload times are charged only when they really happen,
+  a prefix-cache hit happens only if the same prompt really was prefilled
+  on a pipeline that is still loaded, and peak memory is the whole worker
+  process, including every model it keeps loaded. A request with a memory
+  limit therefore evicts the system's other models first and pays for it.
 """
 
 import argparse
@@ -51,12 +63,36 @@ import psutil
 import orbit
 from build_dataset import load_rows, normalize
 from orbit_exec import run_configuration
+from orbit_worker_client import OrbitWorker
 from run_experiment import prevent_sleep
 from twin_v0 import AnalyticalTwin
 
 
 RESULTS_JSONL = Path("results/evaluation_runs.jsonl")
 SUMMARY_CSV = Path("results/evaluation_summary.csv")
+WORKER_RESULTS_JSONL = Path("results/evaluation_runs_worker.jsonl")
+WORKER_SUMMARY_CSV = Path("results/evaluation_summary_worker.csv")
+
+DEFAULT_SYSTEMS = {
+    "fresh": ["baseline", "static", "orbit"],
+    # Every system holds its own models in RAM at the same time, so the
+    # default leaves out the baseline (INT8 on CPU, ~2 GB), whose result does
+    # not depend on residency anyway.
+    "worker": ["static", "orbit"],
+}
+
+# How many models ORBIT keeps loaded in worker mode. Measured switch costs
+# (results/experiments/residency.jsonl): loading Q3B-INT4 takes 8-10 s, more
+# than two whole 1024-token requests, so one-at-a-time would pay that on every
+# change between the small and the large model.
+MAX_RESIDENT = 2
+
+# Prompt variants built into orbit_run.cpp. Each request gets
+# "<variant>#<request number>", a prompt no earlier request used, so it can
+# never hit the prefix cache by accident. A repeated-prefix scenario uses one
+# fixed id: the same conversation every time.
+PROMPT_VARIANTS = ["run_1", "run_2", "run_3", "run_4", "run_5"]
+CONVERSATION_PROMPT_ID = "run_1#conversation"
 
 BASELINE = ("INT8", "cpu_auto")
 STATIC = ("INT4", "gpu")
@@ -131,8 +167,22 @@ def get_arguments():
     parser.add_argument(
         "--systems",
         nargs="+",
-        default=["baseline", "static", "orbit"],
+        default=None,
         choices=["baseline", "static", "orbit", "orbit_robust"],
+        help="Default: baseline static orbit (fresh), static orbit (worker).",
+    )
+    parser.add_argument(
+        "--executor",
+        choices=["fresh", "worker"],
+        default="fresh",
+        help="fresh: a new process per request (residency simulated); "
+        "worker: persistent workers (residency measured).",
+    )
+    parser.add_argument(
+        "--max-resident",
+        type=int,
+        default=MAX_RESIDENT,
+        help="worker mode: how many models each ORBIT system keeps loaded.",
     )
     parser.add_argument(
         "--coverage",
@@ -168,7 +218,12 @@ def get_arguments():
         default=SEED,
         help="Seed for the per-request shuffle of system order (reproducible).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.systems is None:
+        args.systems = DEFAULT_SYSTEMS[args.executor]
+    if args.max_resident < 1:
+        parser.error("--max-resident must be at least 1")
+    return args
 
 
 def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
@@ -182,6 +237,12 @@ def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
     def add(scenarios, count, busy):
         for repeat in range(count):
             for name, prompt, output, repeat_prefix, objective, limits in scenarios:
+                number = len(trace) + 1
+                if repeat_prefix:
+                    prompt_id = CONVERSATION_PROMPT_ID
+                else:
+                    variant = PROMPT_VARIANTS[number % len(PROMPT_VARIANTS)]
+                    prompt_id = f"{variant}#{number}"
                 trace.append(
                     Namespace(
                         scenario=f"{name}_busy" if busy else name,
@@ -191,6 +252,10 @@ def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
                         prompt_tokens=prompt,
                         output_tokens=output,
                         repeat_prefix=repeat_prefix,
+                        prompt_id=prompt_id,
+                        # What a pipeline remembers: the worker caches the
+                        # tokenized prompt per (id, length).
+                        prompt_key=f"{prompt_id}:{prompt}",
                         objective=objective,
                         max_ttft_ms=limits.get("max_ttft_ms"),
                         max_total_ms=limits.get("max_total_ms"),
@@ -206,6 +271,57 @@ def build_trace(repeats=REPEATS, busy_repeats=BUSY_REPEATS):
     )
 
     return trace
+
+
+def summarize_systems(frame):
+    """Per-system results over everything each system was asked to do.
+
+    A refused request counts as a violation, but it has no latency, so the
+    means below cover only the requests that system served. Those means cannot
+    be compared across systems that served different requests: use
+    summarize_matched for that.
+    """
+    frame = frame.assign(
+        served=frame["status"] == "success",
+        refused=frame["status"] == "no_feasible_candidate",
+    )
+    summary = frame.groupby("system").agg(
+        requests=("index", "count"),
+        served=("served", "sum"),
+        refused=("refused", "sum"),
+        sla_violation_rate=("violated", "mean"),
+        mean_total_s=("total_ms", lambda values: values.mean() / 1000),
+        mean_ttft_s=("ttft_ms", lambda values: values.mean() / 1000),
+        mean_peak_mib=("peak_mib", "mean"),
+        mean_bits_per_byte=("bits_per_byte", "mean"),
+        switches=("switched", "sum"),
+    )
+    summary["sla_violation_rate"] *= 100
+    return summary
+
+
+def summarize_matched(frame):
+    """Compare systems only on the requests every one of them served.
+
+    Returns None with fewer than two systems or no request in common.
+    """
+    systems = frame["system"].nunique()
+    served = frame[frame["status"] == "success"]
+    counts = served.groupby("index")["system"].nunique()
+    common = counts[counts == systems].index
+    if systems < 2 or len(common) == 0:
+        return None
+
+    matched = served[served["index"].isin(common)].groupby("system").agg(
+        requests=("index", "count"),
+        violations=("violated", "sum"),
+        mean_total_s=("total_ms", lambda values: values.mean() / 1000),
+        mean_ttft_s=("ttft_ms", lambda values: values.mean() / 1000),
+        mean_peak_mib=("peak_mib", "mean"),
+        mean_bits_per_byte=("bits_per_byte", "mean"),
+    )
+    matched["violations"] = matched["violations"].astype(int)
+    return matched
 
 
 def paired_comparison(frame, first, second):
@@ -249,6 +365,122 @@ def interleaved_schedule(trace, systems, seed=SEED):
             plan.append((index, request, system))
 
     return plan
+
+
+def load_options(label, placement):
+    """The worker load flags for one candidate configuration."""
+    settings = orbit.PLACEMENTS[placement]
+    options = {"label": label, "device": settings["device"]}
+    if settings["device"] == "CPU":
+        options["cores"] = settings["cores"]
+        options["threads"] = settings["threads"]
+    else:
+        options["cache_dir"] = orbit.GPU_CACHE_DIR
+    return options
+
+
+class ResidentService:
+    """One system's long-lived inference service, backed by its own worker.
+
+    Keeps up to max_resident configurations loaded, least recently used first
+    in self.resident. Every load, unload and generation is real, and run()
+    reports what it cost. self.cached_prompts records which prompts each
+    loaded pipeline has prefilled: the prefix cache lives inside a pipeline,
+    so unloading a model empties its list.
+
+    Each system has its own worker process, so the memory one system's
+    requests are judged on contains only that system's models.
+    """
+
+    def __init__(self, models, max_resident=1, worker_factory=OrbitWorker):
+        self.models = models
+        self.max_resident = max_resident
+        self.worker = worker_factory()
+        self.resident = []
+        self.cached_prompts = {}
+
+    def _unload(self, slot):
+        reply = self.worker.unload(slot)
+        self.resident.remove(slot)
+        self.cached_prompts.pop(slot, None)
+        if reply["status"] != "success":
+            print(f"  !! unload {slot}: {reply.get('error', '')}", flush=True)
+        return reply.get("unload_ms") or 0.0
+
+    def run(self, label, placement, request):
+        """Serve one request. Returns the worker's generate row plus:
+
+        pipeline_construction_ms  load time if this request had to load, else None
+        unload_ms_charged         time spent evicting other models first
+        evicted                   which configurations were evicted
+        cache_hit                 whether this exact prompt was already prefilled
+        """
+        slot = orbit.candidate_id(label, placement)
+        unload_ms = 0.0
+        evicted = []
+
+        # The request is judged on the memory of the whole process, so with
+        # a memory limit it runs alone: everything else is unloaded first.
+        if request.max_memory_mib:
+            for other in [name for name in self.resident if name != slot]:
+                unload_ms += self._unload(other)
+                evicted.append(other)
+
+        load_reply = None
+        if slot in self.resident:
+            self.resident.remove(slot)  # re-added at the end: most recently used
+        else:
+            while len(self.resident) >= self.max_resident:
+                oldest = self.resident[0]
+                unload_ms += self._unload(oldest)
+                evicted.append(oldest)
+            load_reply = self.worker.load(
+                slot, self.models[label]["path"], **load_options(label, placement)
+            )
+            if load_reply["status"] != "success":
+                return {
+                    **load_reply,
+                    "label": label,
+                    "pipeline_construction_ms": None,
+                    "unload_ms_charged": unload_ms,
+                    "evicted": evicted,
+                    "cache_hit": False,
+                }
+        self.resident.append(slot)
+
+        prompts = self.cached_prompts.setdefault(slot, [])
+        cache_hit = request.prompt_key in prompts
+
+        row = dict(self.worker.generate(
+            slot, request.prompt_tokens, request.output_tokens, prompt_id=request.prompt_id
+        ))
+        if row["status"] == "success" and not cache_hit:
+            prompts.append(request.prompt_key)
+
+        row["label"] = label
+        row["pipeline_construction_ms"] = (
+            load_reply["pipeline_construction_ms"] if load_reply else None
+        )
+        if load_reply and row.get("sampled_peak_rss_mib") is not None:
+            # Peak memory is sampled during generation only; loading can
+            # briefly need more, so take the larger of the two.
+            row["sampled_peak_rss_mib"] = max(
+                row["sampled_peak_rss_mib"], load_reply.get("rss_after_mib") or 0.0
+            )
+        row["unload_ms_charged"] = unload_ms
+        row["evicted"] = evicted
+        row["cache_hit"] = cache_hit
+        return row
+
+    def share_state(self, state):
+        """Tell ORBIT what is really loaded before it decides."""
+        state["resident"] = list(self.resident)
+        state["cached_prompts"] = {
+            slot: list(prompts) for slot, prompts in self.cached_prompts.items()
+        }
+
+    def close(self):
+        self.worker.close()
 
 
 def execute(label, placement, request, models, loaded):
@@ -306,7 +538,20 @@ def orbit_decide(request, state, dataset, twin, models, quality, margins=None):
     return row, frame
 
 
-def judge(request, row, switched, quality):
+def charged_load_ms(row, switched, executor):
+    """The load-related time a request pays before generating.
+
+    fresh:  the measured load, but only when the system switched (simulated
+            residency: a fresh process always loads, a service would not).
+    worker: whatever really happened: a load if one was needed, plus the
+            time spent unloading other models to make room.
+    """
+    if executor == "fresh":
+        return row["pipeline_construction_ms"] if switched else 0.0
+    return (row.get("pipeline_construction_ms") or 0.0) + row.get("unload_ms_charged", 0.0)
+
+
+def judge(request, row, load_ms, quality):
     if row["status"] != "success":
         return {
             "status": row["status"],
@@ -314,7 +559,6 @@ def judge(request, row, switched, quality):
             "violations": "failed",
         }
 
-    load_ms = row["pipeline_construction_ms"] if switched else 0.0
     total_ms = load_ms + row["generation_ms"]
 
     broken = []
@@ -373,6 +617,18 @@ def main():
     load = BackgroundLoad(args.load_workers)
     atexit.register(load.stop)  # never leave burners running after a crash
 
+    worker_mode = args.executor == "worker"
+    results_path = WORKER_RESULTS_JSONL if worker_mode else RESULTS_JSONL
+    summary_path = WORKER_SUMMARY_CSV if worker_mode else SUMMARY_CSV
+
+    services = {}
+    if worker_mode:
+        print(f"\nStarting one worker per system: {', '.join(args.systems)}", flush=True)
+        for system in args.systems:
+            keep = args.max_resident if system.startswith("orbit") else 1
+            services[system] = ResidentService(models, max_resident=keep)
+            atexit.register(services[system].close)
+
     records = []
 
     # What each system has loaded, and ORBIT's learned state, kept per system
@@ -402,6 +658,8 @@ def main():
             previous_index = index
 
         state = states[system]
+        if worker_mode:
+            services[system].share_state(state)
 
         if system == "baseline":
             label, placement = BASELINE
@@ -432,24 +690,31 @@ def main():
                     f"{decision_frame['sys_available_ram_mib'].iloc[0]:.0f} MiB",
                     flush=True,
                 )
-                records.append(
-                    {
-                        "system": system,
-                        "index": index,
-                        "scenario": request.scenario,
-                        "phase": request.phase,
-                        "chosen": None,
-                        "status": "no_feasible_candidate",
-                        "violated": True,
-                        "violations": "no-candidate",
-                    }
-                )
+                refusal = {
+                    "system": system,
+                    "index": index,
+                    "scenario": request.scenario,
+                    "phase": request.phase,
+                    "repeat": request.repeat,
+                    "chosen": None,
+                    "status": "no_feasible_candidate",
+                    "violated": True,
+                    "violations": "no-candidate",
+                }
+                records.append(refusal)
+                # A refusal is a result: keep it in the raw log as well.
+                results_path.parent.mkdir(parents=True, exist_ok=True)
+                with results_path.open("a", encoding="utf-8") as file:
+                    file.write(json.dumps(refusal) + "\n")
                 continue  # next system's run (or the next request)
 
             label, placement = choice["label"], choice["placement"]
 
         identifier = orbit.candidate_id(label, placement)
-        switched = loaded[system] != identifier
+        if worker_mode:
+            switched = identifier not in services[system].resident
+        else:
+            switched = loaded[system] != identifier
 
         print(
             f"\n[{system} {index}/{len(trace)}] {request.scenario} "
@@ -457,7 +722,21 @@ def main():
             flush=True,
         )
 
-        if system.startswith("orbit"):
+        if worker_mode:
+            service = services[system]
+            if system.startswith("orbit"):
+                row = orbit.run_and_learn(
+                    choice,
+                    request,
+                    models,
+                    state,
+                    executor=lambda chosen, args_: service.run(
+                        chosen["label"], chosen["placement"], args_
+                    ),
+                )
+            else:
+                row = service.run(label, placement, request)
+        elif system.startswith("orbit"):
             row = orbit.run_and_learn(choice, request, models, state)
         else:
             row = execute(label, placement, request, models, loaded[system])
@@ -472,34 +751,39 @@ def main():
             "repeat": request.repeat,
             "chosen": identifier,
             "switched": switched,
-            **judge(request, row, switched, quality),
+            "executor": args.executor,
+            **judge(request, row, charged_load_ms(row, switched, args.executor), quality),
         }
+        if worker_mode:
+            record["prompt_id"] = request.prompt_id
+            record["cache_hit"] = bool(row.get("cache_hit"))
+            record["generation_index"] = row.get("generation_index")
+            record["evicted"] = ",".join(row.get("evicted", []))
+            record["resident_after"] = ",".join(services[system].resident)
         if choice is not None:
             record["predicted_total_ms"] = float(choice["pred_total_ms"])
             record["mode"] = choice.get("mode")
 
         records.append(record)
 
-        RESULTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
-        with RESULTS_JSONL.open("a", encoding="utf-8") as file:
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        with results_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, default=float) + "\n")
 
     load.stop()
+    for service in services.values():
+        service.close()
 
     frame = pd.DataFrame(records)
-    summary = frame.groupby("system").agg(
-        requests=("index", "count"),
-        sla_violation_rate=("violated", "mean"),
-        mean_total_s=("total_ms", lambda values: values.mean() / 1000),
-        mean_ttft_s=("ttft_ms", lambda values: values.mean() / 1000),
-        mean_peak_mib=("peak_mib", "mean"),
-        mean_bits_per_byte=("bits_per_byte", "mean"),
-        switches=("switched", "sum"),
-    )
-    summary["sla_violation_rate"] *= 100
-    summary.to_csv(SUMMARY_CSV)
+    summary = summarize_systems(frame)
+    summary.to_csv(summary_path)
 
     print("\n" + summary.round(2).to_string())
+
+    matched = summarize_matched(frame)
+    if matched is not None:
+        print("\nLike for like (only requests every system served):")
+        print(matched.round(2).to_string())
 
     by_scenario = frame.pivot_table(
         index="scenario",
@@ -541,8 +825,20 @@ def main():
             if result:
                 print(f"  A={a:<12} B={b:<9}" + "".join(f"{n:>12}" for n in result[:2]) + "".join(f"{n:>11}" for n in result[2:]))
 
-    print(f"\nRuns: {RESULTS_JSONL.resolve()}")
-    print(f"Summary: {SUMMARY_CSV.resolve()}")
+    if worker_mode:
+        print("\nResidency (measured):")
+        served = frame.dropna(subset=["chosen"])
+        served = served[served["status"] == "success"]
+        residency = served.groupby("system").agg(
+            loads=("switched", "sum"),
+            load_s_charged=("load_ms_charged", lambda values: values.sum() / 1000),
+            cache_hits=("cache_hit", "sum"),
+            evicting_requests=("evicted", lambda values: int((values != "").sum())),
+        )
+        print(residency.round(1).to_string())
+
+    print(f"\nRuns: {results_path.resolve()}")
+    print(f"Summary: {summary_path.resolve()}")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,13 @@ find_package(OpenVINOGenAI REQUIRED
 add_executable(orbit_run orbit_run.cpp telemetry.hpp)
 target_link_libraries(orbit_run PRIVATE openvino::genai psapi pdh advapi32)
 
+# Long-lived worker that keeps models loaded between requests, so residency,
+# switching cost and cross-request prefix caching are measured, not simulated.
+# It reuses orbit_run.cpp's helpers by #including that file (not compiling it
+# separately), so orbit_run.cpp is deliberately not listed as a source here.
+add_executable(orbit_worker orbit_worker.cpp telemetry.hpp)
+target_link_libraries(orbit_worker PRIVATE openvino::genai psapi pdh advapi32)
+
 # Interactive local chat application (the deployment).
 add_executable(orbit_chat orbit_chat.cpp telemetry.hpp)
 target_link_libraries(orbit_chat PRIVATE openvino::genai psapi)
@@ -24,6 +31,7 @@ target_link_libraries(orbit_chat PRIVATE openvino::genai psapi)
 if(MSVC)
     target_compile_options(orbit_run PRIVATE /W4 /utf-8)
     target_compile_options(orbit_chat PRIVATE /W4 /utf-8)
+    target_compile_options(orbit_worker PRIVATE /W4 /utf-8)
 endif()
 
 # Put the GenAI and tokenizers DLLs next to the executable.
