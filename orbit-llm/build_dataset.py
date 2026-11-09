@@ -83,6 +83,9 @@ def normalize(frame):
     # can hit the prefix cache across requests, which prompt_mode cannot say.
     if "command" in frame:
         frame = frame[frame["command"].isna()].copy()
+    # Study scripts that summarize worker replies in their own format (for
+    # example prefix_pool_study.py) are not executor rows either.
+    frame = frame[frame["requested_input_tokens"].notna()].copy()
 
     frame["precision"] = frame["label"]
     frame["prompt_tokens"] = frame["requested_input_tokens"].astype(int)

@@ -389,7 +389,9 @@ class ResidentService:
     lives inside a pipeline, so unloading a model throws it away.
 
     kv_blocks = 0 keeps OpenVINO's default dynamic pool; otherwise every
-    pipeline gets a fixed pool of that many blocks.
+    pipeline gets a fixed pool of that many blocks. A dict such as
+    {"CPU": 280, "GPU": 552} sets it per device, since a CPU block holds 32
+    tokens and a GPU block 16.
 
     Each system has its own worker process, so the memory one system's
     requests are judged on contains only that system's models.
@@ -402,6 +404,11 @@ class ResidentService:
         self.worker = worker_factory()
         self.resident = []
         self.retention = {}
+
+    def pool_blocks(self, device):
+        if isinstance(self.kv_blocks, dict):
+            return self.kv_blocks.get(device, 0)
+        return self.kv_blocks
 
     def _unload(self, slot):
         reply = self.worker.unload(slot)
@@ -440,8 +447,9 @@ class ResidentService:
                 unload_ms += self._unload(oldest)
                 evicted.append(oldest)
             options = load_options(label, placement)
-            if self.kv_blocks:
-                options["kv_blocks"] = self.kv_blocks
+            blocks = self.pool_blocks(orbit.PLACEMENTS[placement]["device"])
+            if blocks:
+                options["kv_blocks"] = blocks
             load_reply = self.worker.load(slot, self.models[label]["path"], **options)
             if load_reply["status"] != "success":
                 return {
@@ -456,7 +464,9 @@ class ResidentService:
         self.resident.append(slot)
 
         device = orbit.PLACEMENTS[placement]["device"]
-        retention = self.retention.setdefault(slot, orbit.PrefixRetention(device, self.kv_blocks))
+        retention = self.retention.setdefault(
+            slot, orbit.PrefixRetention(device, self.pool_blocks(device))
+        )
         cache_hit = retention.holds(request.prompt_key)
 
         row = dict(self.worker.generate(

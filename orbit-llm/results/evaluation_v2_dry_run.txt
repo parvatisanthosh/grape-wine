@@ -1,0 +1,40 @@
+﻿
+Context limits: {'FP16': 2048, 'INT8': 2048, 'INT4': 2048, 'Q3B-INT4': 32768}
+HumanEval pass rates: {'FP16': None, 'INT8': None, 'INT4': None, 'Q3B-INT4': 0.823}
+
+Best fixed configuration on the tuning trace (300 requests), predicted:
+    candidate  violations  served_total_s
+     INT8@gpu         117          2040.6
+     INT4@gpu         119          1480.3
+ Q3B-INT4@gpu         119          3330.0
+     FP16@gpu         120          2045.2
+INT8@cpu_auto         175          3320.5
+  INT4@cpu_8t         176          2673.8
+
+ORBIT picks a different configuration from INT8@gpu on 271 of 300 test requests.
+stream    candidate   
+chat      FP16@gpu          2
+          INT4@gpu        143
+code      Q3B-INT4@gpu     74
+one_shot  INT4@gpu         42
+          INT8@gpu         29
+          Q3B-INT4@gpu     10
+
+Predicted SLA violations per system and stream:
+system    best_fixed  default  orbit  rule  All
+stream                                         
+chat               0       29      0     0   29
+code              74       74     58    58  264
+one_shot          38       65     38    39  180
+All              112      168     96    97  473
+
+Predicted discordant pairs, ORBIT vs best fixed: 16 only best fixed broke, 0 only ORBIT broke.
+
+Predicted serving time per system (hours, excluding loads):
+system
+best_fixed    0.64
+default       1.22
+orbit         0.65
+rule          0.62
+
+

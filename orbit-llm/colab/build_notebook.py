@@ -1,4 +1,8 @@
-"""Build humaneval_quality.ipynb from quality_core.py and run_generation.py.
+"""Build the HumanEval notebooks from quality_core.py and run_generation.py.
+
+- humaneval_quality.ipynb: Qwen2.5-Coder-3B, downloaded from Hugging Face.
+- humaneval_tinyllama.ipynb: the laptop's own TinyLlama files, read from Google
+  Drive and checked against the SHA-256 fingerprints below.
 
 Run from orbit-llm/colab/:  python build_notebook.py
 """
@@ -54,6 +58,7 @@ MODELS = {{
 PROBLEMS_URL = "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
 PROBLEMS_SHA256 = "{PROBLEMS_SHA256}"
 DRIVE_FOLDER = "/content/drive/MyDrive/orbit_quality"
+RESULTS_ZIP = "humaneval_results.zip"
 """
 
 INSTALL = """
@@ -165,40 +170,136 @@ for tag, outcomes in scores.items():
     print(f"{reference} vs {tag}: {only_reference} only {reference}, {only_this} only {tag}, "
           f"McNemar p = {qc.mcnemar_exact(only_reference, only_this):.3f}")
 
-with zipfile.ZipFile("humaneval_results.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+with zipfile.ZipFile(RESULTS_ZIP, "w", zipfile.ZIP_DEFLATED) as archive:
     for path in Path("scored").iterdir():
         archive.write(path, path.name)
-files.download("humaneval_results.zip")
+files.download(RESULTS_ZIP)
 """
 
 
-def main():
-    core = (HERE / "quality_core.py").read_text(encoding="utf-8")
-    generation = (HERE / "run_generation.py").read_text(encoding="utf-8")
+# ---------------------------------------------------------------------------
+# TinyLlama: the laptop's own files, uploaded to Drive
 
-    notebook = {
-        "cells": [
-            markdown(INTRO),
-            code(SETTINGS),
-            code(INSTALL),
-            code(DRIVE),
-            code("%%writefile quality_core.py\n" + core),
-            code("%%writefile run_generation.py\n" + generation),
-            code(PROBLEMS_CELL),
-            code(GENERATE),
-            code(SCORE),
-        ],
+# SHA-256 of openvino_model.bin in C:/Users/parva/<folder>, computed on the laptop.
+TINYLLAMA = {
+    "fp16": ["tinyllama-ov", "578dd75c3f4a82163f802cc749551402836bee3c3edc148ad66e5890cde84023"],
+    "int8": ["tinyllama-int8", "984ea5d19561f14286fdeffdae9e44607135d97c60506c0eaa1d2cfc8b7186ca"],
+    "int4": ["tinyllama-int4", "fffa689fc5b07b576c0ecbe9682a5cfb9b32fb433b7379b7433a971fb287da10"],
+}
+
+INTRO_TINYLLAMA = r"""
+# HumanEval quality for TinyLlama-1.1B (the laptop's own model files)
+
+Part of ORBIT-LLM (task SWFW_5S_13). Same method and settings as the Qwen2.5-Coder-3B
+notebook (Finding 25), applied to the exact TinyLlama files the laptop uses. It measures
+answer quality only; every timing number comes from the laptop.
+
+**Before you start:** upload the three folders `tinyllama-ov`, `tinyllama-int8` and
+`tinyllama-int4` from `C:\Users\parva\` into **My Drive > orbit_models**. Upload each
+whole folder, not just its contents. The notebook checks each model's fingerprint and
+stops if a file differs from the laptop's.
+
+**How to use it**
+1. Runtime > Change runtime type > **CPU**.
+2. Run all cells in order, then keep this tab open.
+3. If the session stops, run all cells again. It resumes from Drive.
+4. The last cell downloads `humaneval_tinyllama_results.zip`. Give it to Claude.
+"""
+
+SETTINGS_TINYLLAMA = f"""
+# tag: [folder in My Drive/orbit_models, SHA-256 of its openvino_model.bin on the laptop]
+MODELS = {json.dumps(TINYLLAMA, indent=4)}
+MODELS_FOLDER = "/content/drive/MyDrive/orbit_models"
+PROBLEMS_URL = "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
+PROBLEMS_SHA256 = "{PROBLEMS_SHA256}"
+DRIVE_FOLDER = "/content/drive/MyDrive/orbit_quality/tinyllama"
+RESULTS_ZIP = "humaneval_tinyllama_results.zip"
+"""
+
+CHECK_MODELS = """
+# Every model must be in Drive and identical to the laptop's before anything runs.
+import hashlib
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1 << 24), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+for tag, (folder, expected) in MODELS.items():
+    weights = Path(MODELS_FOLDER) / folder / "openvino_model.bin"
+    assert weights.exists(), f"Missing {weights}: upload the {folder} folder to My Drive/orbit_models"
+    assert sha256(weights) == expected, f"{folder} differs from the laptop's file: upload it again"
+    print(f"{tag}: {folder} verified")
+"""
+
+GENERATE_TINYLLAMA = """
+import json, shutil, subprocess, sys
+import quality_core as qc
+
+status = {}
+for tag, (folder, expected) in MODELS.items():
+    answers = f"{DRIVE_FOLDER}/answers_{tag}.jsonl"
+    if len(qc.load_jsonl(answers)) >= 164:
+        status[tag] = "finished"
+        print(f"--- {tag}: already finished", flush=True)
+        continue
+    # Copy to local disk: reading weights through the Drive mount is slow.
+    model_dir = f"/content/models/{tag}"
+    print(f"--- {tag}: copying {folder} from Drive", flush=True)
+    shutil.copytree(Path(MODELS_FOLDER) / folder, model_dir, dirs_exist_ok=True)
+    # Pipe the output here: a child process's prints do not reach the notebook.
+    process = subprocess.Popen(
+        [sys.executable, "-u", "run_generation.py", "--model-dir", model_dir, "--tag", tag,
+         "--problems", "HumanEval.jsonl.gz", "--out", answers],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    for line in process.stdout:
+        print(line, end="", flush=True)
+    code = process.wait()
+    status[tag] = "finished" if code == 0 else ("out of memory" if code == -9 else f"failed ({code})")
+    print(f"--- {tag}: {status[tag]}", flush=True)
+    shutil.rmtree(model_dir, ignore_errors=True)
+
+Path(f"{DRIVE_FOLDER}/status.json").write_text(json.dumps(status))
+print(status)
+"""
+
+
+def notebook(name, cells):
+    document = {
+        "cells": cells,
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-            "colab": {"name": "humaneval_quality.ipynb"},
+            "colab": {"name": name},
         },
         "nbformat": 4,
         "nbformat_minor": 5,
     }
-    (HERE / "humaneval_quality.ipynb").write_text(
-        json.dumps(notebook, indent=1), encoding="utf-8"
+    (HERE / name).write_text(json.dumps(document, indent=1), encoding="utf-8")
+    print(f"Wrote {name}")
+
+
+def main():
+    core = code(
+        "%%writefile quality_core.py\n" + (HERE / "quality_core.py").read_text(encoding="utf-8")
     )
-    print("Wrote humaneval_quality.ipynb")
+    generation = code(
+        "%%writefile run_generation.py\n" + (HERE / "run_generation.py").read_text(encoding="utf-8")
+    )
+
+    notebook(
+        "humaneval_quality.ipynb",
+        [markdown(INTRO), code(SETTINGS), code(INSTALL), code(DRIVE), core, generation,
+         code(PROBLEMS_CELL), code(GENERATE), code(SCORE)],
+    )
+    notebook(
+        "humaneval_tinyllama.ipynb",
+        [markdown(INTRO_TINYLLAMA), code(SETTINGS_TINYLLAMA), code(INSTALL), code(DRIVE),
+         code(CHECK_MODELS), core, generation, code(PROBLEMS_CELL), code(GENERATE_TINYLLAMA),
+         code(SCORE)],
+    )
 
 
 if __name__ == "__main__":

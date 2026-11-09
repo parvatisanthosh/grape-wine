@@ -88,3 +88,39 @@ measured on the same notebook and settings as Finding 25, is at least 50%.
 
 - **TinyLlama HumanEval** (Colab, same notebook): without it, TinyLlama cannot serve code
   requests (section 2). This needs the user's approval.
+
+## 7. Dry-run result (2026-11-09, before any v2 measurement)
+
+`python evaluate_v2.py dry-run --tuning traces/tuning.jsonl --test traces/test.jsonl`.
+Output: `results/evaluation_v2_dry_run.txt`. These are Twin predictions, not measurements.
+TinyLlama's HumanEval score was not available yet, so TinyLlama was barred from code.
+
+| Test trace, 300 requests | Best fixed (INT8 @ iGPU) | OpenVINO default | Simple rule | ORBIT |
+|---|---|---|---|---|
+| Predicted violations | 112 | 168 | 97 | 96 |
+| Of which code (74 requests) | 74 | 74 | 58 | 58 |
+
+- **ORBIT vs best fixed:** different choices on 271 of 300 requests. The predicted
+  discordant pairs are 16 (only best fixed broke) and 0 (only ORBIT broke). All 16 are
+  code requests that a fixed TinyLlama may not serve.
+- **ORBIT vs simple rule:** nearly the same (96 vs 97). On this laptop, routing by request
+  type captures almost all of the predicted benefit.
+- **The tuning choice is close:** INT8 @ iGPU 117, INT4 @ iGPU 119, Q3B-INT4 @ iGPU 119
+  predicted violations. The measured tuning sweep may pick a different one.
+- **Predicted serving time:** about 0.6–1.2 h per system for the test trace, before loads.
+
+## 8. Changes made after the dry run, before any measurement
+
+1. **Two passes, because of memory.** Each system keeps its own worker and models. All
+   five at once would need about 12 GB, more than this laptop has free.
+   - Pass A runs ORBIT, best fixed and a second copy of best fixed (the A/A noise run),
+     interleaved per request. It holds the primary test.
+   - Pass B runs default, rule and ORBIT without correction, interleaved per request.
+2. **Chat follow-ups reuse only the earlier prompt, not the earlier reply.** The worker
+   builds prompts from a fixed text, so the reply is not part of the next prompt. Prefix
+   reuse is therefore a little smaller than in a real chat. Real chat prompts here are
+   short (median about 62 tokens), so prefix caching matters little in this workload.
+3. **Proposed secondary analysis, not part of the primary test:** a phase with the iGPU
+   busy (as in v1), where a fixed rule cannot adapt. The dry run suggests that ORBIT can
+   only beat the rule when conditions change. This is labelled exploratory because it was
+   added after seeing the dry run.

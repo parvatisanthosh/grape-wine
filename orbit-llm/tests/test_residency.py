@@ -85,6 +85,19 @@ def test_fixed_pool_keeps_prompts_that_fit():
         fits.close()
 
 
+def test_pool_size_can_be_set_per_device():
+    # GPU blocks hold 16 tokens: two 256+16-token prompts need 34 of them.
+    per_device = service(max_resident=1, kv_blocks={"GPU": 34, "CPU": 1})
+    try:
+        first, second = request("run_1#a"), request("run_2#b")
+        per_device.run("INT4", "gpu", first)
+        per_device.run("INT4", "gpu", second)
+        assert per_device.run("INT4", "gpu", first)["cache_hit"]
+        assert per_device.pool_blocks("CPU") == 1
+    finally:
+        per_device.close()
+
+
 def test_pool_one_block_short_loses_every_prompt_when_taking_turns():
     short = service(max_resident=1, kv_blocks=33)
     try:
