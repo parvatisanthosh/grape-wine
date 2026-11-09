@@ -384,25 +384,29 @@ class ResidentService:
 
     Keeps up to max_resident configurations loaded, least recently used first
     in self.resident. Every load, unload and generation is real, and run()
-    reports what it cost. self.cached_prompts records which prompts each
-    loaded pipeline has prefilled: the prefix cache lives inside a pipeline,
-    so unloading a model empties its list.
+    reports what it cost. self.retention models which prompts each loaded
+    pipeline's KV pool still holds (orbit.PrefixRetention). The prefix cache
+    lives inside a pipeline, so unloading a model throws it away.
+
+    kv_blocks = 0 keeps OpenVINO's default dynamic pool; otherwise every
+    pipeline gets a fixed pool of that many blocks.
 
     Each system has its own worker process, so the memory one system's
     requests are judged on contains only that system's models.
     """
 
-    def __init__(self, models, max_resident=1, worker_factory=OrbitWorker):
+    def __init__(self, models, max_resident=1, worker_factory=OrbitWorker, kv_blocks=0):
         self.models = models
         self.max_resident = max_resident
+        self.kv_blocks = kv_blocks
         self.worker = worker_factory()
         self.resident = []
-        self.cached_prompts = {}
+        self.retention = {}
 
     def _unload(self, slot):
         reply = self.worker.unload(slot)
         self.resident.remove(slot)
-        self.cached_prompts.pop(slot, None)
+        self.retention.pop(slot, None)
         if reply["status"] != "success":
             print(f"  !! unload {slot}: {reply.get('error', '')}", flush=True)
         return reply.get("unload_ms") or 0.0
@@ -413,7 +417,8 @@ class ResidentService:
         pipeline_construction_ms  load time if this request had to load, else None
         unload_ms_charged         time spent evicting other models first
         evicted                   which configurations were evicted
-        cache_hit                 whether this exact prompt was already prefilled
+        cache_hit                 predicted: the pool should still hold this prompt
+        measured_hit              judged from TTFT; None for short prompts
         """
         slot = orbit.candidate_id(label, placement)
         unload_ms = 0.0
@@ -434,9 +439,10 @@ class ResidentService:
                 oldest = self.resident[0]
                 unload_ms += self._unload(oldest)
                 evicted.append(oldest)
-            load_reply = self.worker.load(
-                slot, self.models[label]["path"], **load_options(label, placement)
-            )
+            options = load_options(label, placement)
+            if self.kv_blocks:
+                options["kv_blocks"] = self.kv_blocks
+            load_reply = self.worker.load(slot, self.models[label]["path"], **options)
             if load_reply["status"] != "success":
                 return {
                     **load_reply,
@@ -445,17 +451,24 @@ class ResidentService:
                     "unload_ms_charged": unload_ms,
                     "evicted": evicted,
                     "cache_hit": False,
+                    "measured_hit": None,
                 }
         self.resident.append(slot)
 
-        prompts = self.cached_prompts.setdefault(slot, [])
-        cache_hit = request.prompt_key in prompts
+        device = orbit.PLACEMENTS[placement]["device"]
+        retention = self.retention.setdefault(slot, orbit.PrefixRetention(device, self.kv_blocks))
+        cache_hit = retention.holds(request.prompt_key)
 
         row = dict(self.worker.generate(
             slot, request.prompt_tokens, request.output_tokens, prompt_id=request.prompt_id
         ))
-        if row["status"] == "success" and not cache_hit:
-            prompts.append(request.prompt_key)
+        if row["status"] == "success":
+            retention.record(request.prompt_key, request.prompt_tokens, request.output_tokens)
+        row["measured_hit"] = (
+            orbit.measured_prefix_hit(row.get("ttft_ms"), request.prompt_tokens)
+            if row["status"] == "success"
+            else None
+        )
 
         row["label"] = label
         row["pipeline_construction_ms"] = (
@@ -476,7 +489,7 @@ class ResidentService:
         """Tell ORBIT what is really loaded before it decides."""
         state["resident"] = list(self.resident)
         state["cached_prompts"] = {
-            slot: list(prompts) for slot, prompts in self.cached_prompts.items()
+            slot: retention.keys() for slot, retention in self.retention.items()
         }
 
     def close(self):
@@ -757,6 +770,7 @@ def main():
         if worker_mode:
             record["prompt_id"] = request.prompt_id
             record["cache_hit"] = bool(row.get("cache_hit"))
+            record["measured_hit"] = row.get("measured_hit")
             record["generation_index"] = row.get("generation_index")
             record["evicted"] = ",".join(row.get("evicted", []))
             record["resident_after"] = ",".join(services[system].resident)
@@ -832,7 +846,8 @@ def main():
         residency = served.groupby("system").agg(
             loads=("switched", "sum"),
             load_s_charged=("load_ms_charged", lambda values: values.sum() / 1000),
-            cache_hits=("cache_hit", "sum"),
+            predicted_hits=("cache_hit", "sum"),
+            measured_hits=("measured_hit", lambda values: int((values == True).sum())),  # noqa: E712
             evicting_requests=("evicted", lambda values: int((values != "").sum())),
         )
         print(residency.round(1).to_string())

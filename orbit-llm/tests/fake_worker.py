@@ -1,17 +1,36 @@
 """A stand-in for orbit_worker.exe that speaks the same protocol, for tests.
 
-It loads nothing: "generate" answers instantly. A repeated prompt id on the
-same slot is reported as a fast prefix-cache hit, like the real worker would.
+It loads nothing: "generate" answers instantly. A prompt still in the slot's
+KV pool is reported as a fast prefix-cache hit, with the pool behaving as
+measured in Finding 26:
+- default (no --kv-blocks): the pool holds only the previous request's prompt;
+- --kv-blocks N: prompts are kept until their blocks are needed, least
+  recently used first, with 16-token blocks on GPU and 32 on CPU.
 Memory is faked as 400 MiB for the runtime plus 500 MiB per loaded slot, so
 tests can see that keeping models loaded costs memory.
 """
 
 RUNTIME_MIB = 400.0
 SLOT_MIB = 500.0
+BLOCK_TOKENS = {"CPU": 32, "GPU": 16}
 
 import json
+import math
 import shlex
 import sys
+
+
+def serve_from_pool(state, prompt_key, tokens):
+    """Return whether the prompt was cached, then update the pool."""
+    cached = state["cached"]  # prompt key -> blocks, least recently used first
+    hit = prompt_key in cached
+    cached.pop(prompt_key, None)
+    if not state["pool_blocks"]:
+        cached.clear()
+    cached[prompt_key] = math.ceil(tokens / BLOCK_TOKENS[state["device"]])
+    while state["pool_blocks"] and sum(cached.values()) > state["pool_blocks"]:
+        del cached[next(iter(cached))]
+    return hit
 
 
 def reply(**fields):
@@ -40,7 +59,12 @@ def main():
                       error=f"slot '{slot}' is already loaded; unload it first")
                 continue
             flags = dict(zip(rest[1::2], rest[2::2]))
-            slots[slot] = {"seen": set(), "count": 0, "device": flags.get("--device", "CPU")}
+            slots[slot] = {
+                "cached": {},
+                "count": 0,
+                "device": flags.get("--device", "CPU"),
+                "pool_blocks": int(flags.get("--kv-blocks", 0)),
+            }
             reply(command="load", slot=slot, status="success", pipeline_construction_ms=2500.0,
                   device=slots[slot]["device"], loaded_slots=",".join(slots),
                   rss_after_mib=RUNTIME_MIB + SLOT_MIB * len(slots))
@@ -51,8 +75,9 @@ def main():
             flags = dict(zip(rest[1::2], rest[2::2]))
             state = slots[slot]
             prompt_id = flags.get("--prompt-id", "run_1")
-            hit = prompt_id in state["seen"]
-            state["seen"].add(prompt_id)
+            prompt_tokens = int(flags["--prompt-tokens"])
+            tokens = prompt_tokens + int(flags["--output-tokens"])
+            hit = serve_from_pool(state, f"{prompt_id}:{prompt_tokens}", tokens)
             state["count"] += 1
             reply(command="generate", slot=slot, status="success", prompt_id=prompt_id,
                   generation_index=state["count"],

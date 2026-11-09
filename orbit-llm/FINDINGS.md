@@ -858,3 +858,52 @@ limits.
   SHA-256 of `openvino_model.bin` match. Colab's tokens/s are not used anywhere, because
   the models ran in separate sessions and possibly on different hardware.
 - Pass rates depend on this prompt, so they are not comparable with published scores.
+
+### Finding 26 — How many prompts a KV pool keeps: an exact, predictable boundary
+
+**Mechanism, from the OpenVINO GenAI source** (`bd8d6542`):
+- `scheduler.hpp` sizes the default dynamic pool for the requests that are active,
+  capped at prompt + max_new_tokens. Prompts kept for reuse are not counted.
+- `block_manager.hpp` gives a new request free blocks first. Once none are left, it
+  reuses cached blocks least recently used first (`get_lru_block_to_overwrite`).
+- `get_full_prefix_restore_plan` matches a cached prompt block by block from the start,
+  and stops at the first missing block.
+- Block size is 32 tokens on CPU and 16 on GPU (`kv_cache_manager.hpp:97`).
+
+**Prediction:** K conversations of T tokens need K × ⌈T / block size⌉ blocks. Taking
+turns is the worst case for least-recently-used reuse, so one block short should lose
+every conversation.
+
+**Test:** `prefix_pool_study.py`, using the new `--kv-blocks` option in `orbit_run` and
+`orbit_worker`, which sets `SchedulerConfig::num_kv_blocks`. TinyLlama INT4, 1920-token
+prompts, 16 output tokens. A warm pass c1…cK, then a measured pass c1…cK. Raw rows:
+`results/experiments/prefix_pool_boundary.jsonl`.
+
+| Device | Blocks per conversation | Pool (blocks) | K | Measured pass |
+|---|---|---|---|---|
+| GPU | 121 | dynamic | 1 | hit (21 ms) |
+| GPU | 121 | 119, 120 | 1 | generation fails (pool smaller than the prompt) |
+| GPU | 121 | 121, 122 | 1 | hit |
+| GPU | 121 | dynamic, 240, 241 | 2 | all miss (4.0–4.3 s) |
+| GPU | 121 | 242, 243 | 2 | all hit (21–28 ms) |
+| GPU | 121 | dynamic, 482, 483 | 4 | all miss (3.8–4.1 s) |
+| GPU | 121 | 484, 485 | 4 | all hit (19–28 ms) |
+| CPU | 61 | dynamic, 61 | 1 | hit (65 ms) |
+| CPU | 61 | 60 | 1 | generation fails |
+| CPU | 61 | dynamic, 121 | 2 | all miss (14.0–17.5 s) |
+| CPU | 61 | 122 | 2 | all hit (63–76 ms) |
+
+- **The prediction held at every boundary**, on both devices.
+- The power state changed during the CPU run, and the GPU run was on battery. Hits and
+  misses do not depend on power, but these timings should not be compared with AC runs.
+- **Memory:** process counters cannot isolate the pool. The iGPU pool is in shared
+  memory, and the worker's committed memory drifts across runs. From the KV formula, a
+  CPU u8 block is 22 layers × 2 × 4 heads × 64 × 32 tokens × 1 byte = 352 KiB, so a
+  1920-token conversation is about 21 MiB.
+- A pool smaller than one prompt fails at generation with
+  `Check 'status != GenerationStatus::IGNORED'`, not with a clear error.
+- **ORBIT changes that follow:**
+  - `orbit.PrefixRetention` models the pool with these rules.
+  - The evaluation records a timing-based `measured_hit` next to the predicted one.
+  - Online correction no longer learns TTFT from a run whose hit or miss went against the
+    prediction. Before, a predicted hit that missed taught ORBIT that hits are slow.

@@ -72,6 +72,7 @@ Run `orbit_run.exe --help` for all options.
 | `--prefix-caching` | `on`, `off` | Reuse KV cache for repeated prompt prefixes (PA) |
 | `--max-batched-tokens` | `0` = unlimited | Prefill chunk size (PA) |
 | `--cache-size-gb` | `0` = dynamic | Pre-allocated KV-cache size (PA) |
+| `--kv-blocks` | `0` = use `--cache-size-gb` | Fixed KV pool in blocks (`SchedulerConfig::num_kv_blocks`), for pools under 1 GB (PA) |
 | `--kv-precision` | `default`, `f32`, `f16`, `bf16`, `u8`, `u4` | KV-cache element type |
 | `--threads` | `0` = default | CPU inference threads |
 | `--cores` | `any`, `pcore`, `ecore` | CPU core type on hybrid CPUs |

@@ -262,6 +262,60 @@ def is_resident(state, identifier):
     return state.get("loaded_candidate") == identifier
 
 
+# KV-cache block size in tokens, per device (GenAI kv_cache_manager.hpp).
+KV_BLOCK_TOKENS = {"CPU": 32, "GPU": 16}
+
+# A full prefix-cache hit skips prompt processing, so its TTFT barely depends on
+# prompt length: ~0.01 ms per prompt token was measured, against at least
+# ~1.4 ms per token for the fastest cold prefill (Finding 26). A threshold far
+# from both keeps the timing check unambiguous.
+HIT_MS_PER_PROMPT_TOKEN = 0.2
+# Below this the two cases are too close to tell apart from timing alone.
+MIN_PROMPT_FOR_HIT_CHECK = 256
+
+
+class PrefixRetention:
+    """Which prompts one pipeline's KV pool still holds (Finding 26).
+
+    pool_blocks = 0 is the default dynamic pool. It grows only to fit the
+    requests running now, so a finished prompt survives only until the next
+    request. A fixed pool keeps prompts until their blocks are needed, least
+    recently used first. A prompt matches only from its first block, so
+    losing any of its oldest blocks loses all of it: in effect, whole prompts
+    are evicted least recently used first.
+    """
+
+    def __init__(self, device, pool_blocks=0):
+        self.block_tokens = KV_BLOCK_TOKENS[device]
+        self.pool_blocks = pool_blocks
+        self.entries = {}  # prompt key -> blocks, oldest first
+
+    def blocks_for(self, prompt_tokens, output_tokens):
+        return math.ceil((prompt_tokens + output_tokens) / self.block_tokens)
+
+    def holds(self, prompt_key):
+        return prompt_key in self.entries
+
+    def record(self, prompt_key, prompt_tokens, output_tokens):
+        """Update after a successful request on this pipeline."""
+        self.entries.pop(prompt_key, None)
+        if not self.pool_blocks:
+            self.entries = {}
+        self.entries[prompt_key] = self.blocks_for(prompt_tokens, output_tokens)
+        while self.pool_blocks and sum(self.entries.values()) > self.pool_blocks:
+            del self.entries[next(iter(self.entries))]
+
+    def keys(self):
+        return list(self.entries)
+
+
+def measured_prefix_hit(ttft_ms, prompt_tokens):
+    """Did a run hit the prefix cache, judged from its TTFT? None if unclear."""
+    if ttft_ms is None or prompt_tokens < MIN_PROMPT_FOR_HIT_CHECK:
+        return None
+    return ttft_ms < HIT_MS_PER_PROMPT_TOKEN * prompt_tokens
+
+
 def prefix_cached(state, identifier, args):
     """Can this request hit the prefix cache on this configuration?
 
@@ -799,7 +853,20 @@ def run_and_learn(choice, args, models, state, executor=None):
     loaded = actual.get("loaded_slots") or ""
     others_loaded = len(loaded.split(",")) > 1
 
-    ttft_to_learn = None if first_after_load else actual["ttft_ms"]
+    # If the run hit (or missed) the prefix cache against the prediction, the
+    # TTFT error comes from the cache model, not from the Twin's speed estimate,
+    # so learning a speed factor from it would be wrong.
+    predicted_hit = bool(choice["cache_hit"])
+    measured_hit = actual.get("measured_hit")
+    hit_mispredicted = measured_hit is not None and measured_hit != predicted_hit
+    if hit_mispredicted:
+        print(
+            f"Prefix cache {'hit' if measured_hit else 'missed'} against the prediction; "
+            "TTFT not learned from this run.",
+            flush=True,
+        )
+
+    ttft_to_learn = None if (first_after_load or hit_mispredicted) else actual["ttft_ms"]
     peak_to_learn = None if others_loaded else actual["sampled_peak_rss_mib"]
 
     correction = update_correction(
@@ -811,7 +878,7 @@ def run_and_learn(choice, args, models, state, executor=None):
         actual_tpot_ms=actual["tpot_ms_per_token"],
         raw_peak_mib=choice["raw_peak_mib"],
         actual_peak_mib=peak_to_learn,
-        cache_hit=bool(choice["cache_hit"]),
+        cache_hit=predicted_hit,
     )
 
     key = load_key(choice["label"], settings["device"])

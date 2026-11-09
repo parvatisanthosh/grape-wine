@@ -36,7 +36,7 @@ it by learning outcome.
 | What does quantization buy? | For TinyLlama, INT8 decodes 1.8–2.0× faster than FP16 and INT4 2.2–3.1× faster, using 48% and 67% less memory, at no measurable (INT8) or 1.4% (INT4) quality cost. |
 | What limits speed? | Prompt processing (prefill) is compute-bound; token generation (decode) is memory-bandwidth-bound. Both are much faster on the iGPU (3–7× TTFT, 1.4–2.6× decode). |
 | What does the KV cache cost? | Exactly its theoretical size (11 KiB/token at u8 for TinyLlama). It is small next to the weights at 1–3B. Prompt-length activations grow memory ~12× faster. |
-| Best KV-cache feature? | Prefix caching: a repeated 1920-token prompt reaches its first token ~177× faster (13 s → 75 ms). In chat, late turns are 12–23× faster with it, and use less memory. Cache eviction gave no benefit in chat and crashes together with prefix caching. |
+| Best KV-cache feature? | Prefix caching: a repeated 1920-token prompt reaches its first token ~177× faster (13 s → 75 ms). In chat, late turns are 12–23× faster with it, and use less memory. But the default pool keeps only the latest prompt; a fixed pool of K × ⌈tokens / block⌉ blocks keeps exactly K. Cache eviction gave no benefit in chat and crashes together with prefix caching. |
 | Minimum hardware? | 1.1B INT4: ~1.3 GB RAM. 3B INT4: ~2.5 GB (iGPU) to ~4 GB (CPU) working set. On this laptop, only the iGPU makes 3B interactive. |
 
 ---
@@ -233,10 +233,45 @@ fixed-size blocks (32 tokens on CPU, 16 on GPU), allocated on demand by a schedu
 | Feature | How it is controlled | Measured effect |
 |---|---|---|
 | **Prefix caching** | `enable_prefix_caching`; on by default in `LLMPipeline` | A repeated 1920-token prompt: TTFT 13 s → 72–77 ms (~177×). Unique prompts: no measurable cost (Finding 8). In chat, turn 2 of a conversation reached its first token in 0.3 s against 3.3 s for the cold first turn. |
-| **Cache size** | `cache_size` (GB) or dynamic | Pre-allocation is committed in full and peaks at ~2× during set-up, but is invisible in the working set (Finding 9). The dynamic default is the safe choice on a 16 GB laptop. |
+| **Cache size** | `cache_size` (GB), `num_kv_blocks`, or dynamic | Pre-allocation is committed in full and peaks at ~2× during set-up, but is invisible in the working set (Finding 9). **The size also decides what prefix caching can keep:** the dynamic default keeps only the latest prompt. A fixed pool keeps exactly as many prompts as fit (Finding 26, below). |
 | **KV precision** | `KV_CACHE_PRECISION` hint | CPU default is already u8. Measured sizes match theory. f16 was faster than u8 at 1k context for the 3B model (dequantization cost), but the signal is noisy. **On the iGPU, any explicit precision (u8 or f16) crashes the paged-attention kernel** — a likely OpenVINO bug, documented in `notes/upstream_issue_gpu_kv_precision.md` (Finding 17). |
 | **Attention backend** | `ATTENTION_BACKEND = PA` or `SDPA` | SDPA grew memory 2× faster with prompt length (+462 vs +222 MiB, 256 → 1920 tokens) and was 69% slower to first token. It is consistent with materializing the full attention-score matrix (Finding 7). |
 | **Cache eviction** | `use_cache_eviction` + `CacheEvictionConfig(start, recent, max)` | No benefit in chat, and it crashes together with prefix caching. See below. |
+
+### Prefix retention: what the pool keeps (Findings 24 and 26)
+
+Prefix caching only helps if the earlier prompt is still in the KV pool. The OpenVINO
+source sets three rules:
+1. The default **dynamic pool** grows only to fit the requests running now.
+2. When a request needs blocks, it reuses cached blocks **least recently used first**.
+   A prompt's first blocks are its oldest.
+3. A cached prompt is matched **from its first block** and stops at the first missing
+   one, so losing block 0 loses everything.
+
+That predicts exactly how many conversations a fixed pool of N blocks can keep:
+K conversations of T tokens need K × ⌈T / block size⌉ blocks. The test sent K 1920-token
+conversations in turns through one TinyLlama INT4 pipeline (`prefix_pool_study.py`), each
+generating 16 tokens:
+
+| Device (block size) | Blocks per conversation | K | Pool that keeps all K | One block less |
+|---|---|---|---|---|
+| iGPU (16) | 121 | 1, 2, 4 | 121, 242, 484: all hits | all misses |
+| CPU (32) | 61 | 1, 2 | 61, 122: all hits | 60 fails to run; 121: all misses |
+| Either | — | 2 or more | Dynamic pool: all misses | — |
+
+- **The prediction held at every boundary tested.** It is all or nothing: taking turns
+  is the worst case for least-recently-used reuse, so one block short loses every
+  conversation, not just one.
+- **A hit is worth 100–250× in TTFT:** about 20 ms instead of 2.4–4 s on the iGPU, and
+  about 65 ms instead of 14–21 s on CPU. These timings came from runs partly on battery.
+  Whether a prompt is still cached does not depend on power.
+- **Memory is cheap at this size.** At 11 KiB per token (u8, CPU), a 1920-token
+  conversation is about 21 MiB. So a 256 MiB pool would keep about 12 of them.
+- **Practical rule:** with prefix caching and more than one conversation per pipeline,
+  set `num_kv_blocks` (or `cache_size`) to cover the conversations that should stay warm.
+  The dynamic default keeps only one.
+- A pool smaller than one prompt makes generation fail with an internal check
+  (`GenerationStatus::IGNORED`), not a clear error message.
 
 ### Cache eviction study
 

@@ -34,6 +34,7 @@ LOAD_KEYS = {
     "prefix_caching",
     "max_batched_tokens",
     "cache_size_gb",
+    "kv_blocks",
     "kv_precision",
     "threads",
     "cores",

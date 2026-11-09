@@ -160,6 +160,42 @@ def test_prefix_cache_hit_only_on_loaded_candidate():
     assert hits == {"INT4@gpu": 1, "INT8@gpu": 0}
 
 
+def test_dynamic_retention_keeps_only_the_latest_prompt():
+    pool = orbit.PrefixRetention("GPU")
+    pool.record("a", 1920, 16)
+    assert pool.holds("a")
+    pool.record("b", 64, 16)
+    assert not pool.holds("a")
+    assert pool.keys() == ["b"]
+
+
+def test_fixed_retention_matches_the_measured_boundary():
+    # Finding 26: two 1920-token conversations need exactly 2 x 121 GPU blocks.
+    for blocks, expected in [(242, True), (241, False)]:
+        pool = orbit.PrefixRetention("GPU", pool_blocks=blocks)
+        hits = []
+        for key in ["c1", "c2", "c1", "c2"]:
+            hits.append(pool.holds(key))
+            pool.record(key, 1920, 16)
+        assert hits[2:] == [expected, expected]
+
+
+def test_fixed_retention_evicts_least_recently_used():
+    pool = orbit.PrefixRetention("CPU", pool_blocks=2)
+    pool.record("a", 32, 0)
+    pool.record("b", 32, 0)
+    pool.record("a", 32, 0)  # a is now the most recent
+    pool.record("c", 32, 0)
+    assert pool.keys() == ["a", "c"]
+
+
+def test_measured_prefix_hit_thresholds():
+    assert orbit.measured_prefix_hit(20.0, 1920) is True
+    assert orbit.measured_prefix_hit(2400.0, 1920) is False
+    assert orbit.measured_prefix_hit(20.0, 64) is None
+    assert orbit.measured_prefix_hit(None, 1920) is None
+
+
 def candidates_frame(rows):
     return pd.DataFrame(
         [

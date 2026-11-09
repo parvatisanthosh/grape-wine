@@ -88,6 +88,7 @@ $env:Path = "C:\Users\parva\venv\Lib\site-packages\openvino\libs;$env:Path"
 | `quality_eval.py` | Quality proxy: bits per byte on a fixed local corpus, comparable across tokenizers. |
 | `colab/`, `summarize_humaneval.py` | Task-level quality: HumanEval on the 3B model at FP16, INT8 and INT4, run on Colab and summarized locally. |
 | `prefix_overwrite_test.py` | Tests whether a prompt survives in the prefix cache when other prompts run in between. |
+| `prefix_pool_study.py` | Finds how many conversations a fixed KV pool keeps, against the prediction from the OpenVINO source (Finding 26). |
 | `data/` | Real datasets for evaluation; see [data/README.md](data/README.md). |
 | `models.json` | Model registry: TinyLlama-1.1B FP16/INT8/INT4, Qwen2.5-Coder-3B INT4. |
 

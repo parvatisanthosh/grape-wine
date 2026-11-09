@@ -81,6 +81,7 @@ struct Options {
     std::string prefix_caching = "on";     // on | off (PA backend only)
     std::size_t max_batched_tokens = 0;    // 0 = unlimited (PA backend only)
     std::size_t cache_size_gb = 0;         // 0 = dynamic allocation (PA backend only)
+    std::size_t kv_blocks = 0;             // fixed pool in blocks, overrides cache_size_gb (PA only)
     std::string kv_precision = "default";  // default | f32 | f16 | bf16 | u8 | u4
     int threads = 0;                       // 0 = plugin default
     std::string cores = "any";             // any | pcore | ecore (CPU only)
@@ -104,6 +105,8 @@ void print_usage() {
         "  --prefix-caching on|off   PA backend only (default on, same as LLMPipeline default)\n"
         "  --max-batched-tokens N    PA backend only, 0 = unlimited (default 0)\n"
         "  --cache-size-gb N         PA backend only, 0 = grow dynamically (default 0)\n"
+        "  --kv-blocks N             PA backend only: fixed pool of N KV blocks, for pools\n"
+        "                            smaller than 1 GB (default 0 = use --cache-size-gb)\n"
         "  --kv-precision TYPE       default | f32 | f16 | bf16 | u8 | u4\n"
         "  --threads N               CPU inference threads, 0 = plugin default\n"
         "  --cores TYPE              any | pcore | ecore (CPU only)\n"
@@ -166,6 +169,7 @@ Options parse_arguments(int argc, char* argv[]) {
         else if (name == "--prefix-caching") options.prefix_caching = value;
         else if (name == "--max-batched-tokens") options.max_batched_tokens = parse_size(name, value);
         else if (name == "--cache-size-gb") options.cache_size_gb = parse_size(name, value);
+        else if (name == "--kv-blocks") options.kv_blocks = parse_size(name, value);
         else if (name == "--kv-precision") options.kv_precision = value;
         else if (name == "--threads") options.threads = static_cast<int>(parse_size(name, value));
         else if (name == "--cores") options.cores = value;
@@ -187,9 +191,13 @@ Options parse_arguments(int argc, char* argv[]) {
     require_one_of("--cores", options.cores, {"any", "pcore", "ecore"});
 
     if (options.backend == "sdpa" &&
-        (options.prefix_caching == "off" || options.max_batched_tokens != 0 || options.cache_size_gb != 0)) {
+        (options.prefix_caching == "off" || options.max_batched_tokens != 0 || options.cache_size_gb != 0 ||
+         options.kv_blocks != 0)) {
         throw std::invalid_argument(
-            "--prefix-caching, --max-batched-tokens and --cache-size-gb apply to the PA backend only");
+            "--prefix-caching, --max-batched-tokens, --cache-size-gb and --kv-blocks apply to the PA backend only");
+    }
+    if (options.kv_blocks != 0 && options.cache_size_gb != 0) {
+        throw std::invalid_argument("Give either --kv-blocks or --cache-size-gb, not both");
     }
     if (options.device != "CPU" && (options.threads != 0 || options.cores != "any")) {
         throw std::invalid_argument("--threads and --cores apply to the CPU device only");
@@ -484,6 +492,7 @@ ov::AnyMap build_pipeline_properties(const Options& options) {
                                                : options.max_batched_tokens;
         scheduler.enable_prefix_caching = options.prefix_caching == "on";
         scheduler.cache_size = options.cache_size_gb;
+        scheduler.num_kv_blocks = options.kv_blocks;
         properties.insert(ov::genai::scheduler_config(scheduler));
     }
 
@@ -579,10 +588,12 @@ JsonRow make_base_row(const Options& options) {
         row.set("prefix_caching", options.prefix_caching == "on");
         row.set("max_batched_tokens", options.max_batched_tokens);
         row.set("cache_size_gb", options.cache_size_gb);
+        row.set("kv_blocks", options.kv_blocks);
     } else {
         row.set_null("prefix_caching");
         row.set_null("max_batched_tokens");
         row.set_null("cache_size_gb");
+        row.set_null("kv_blocks");
     }
     row.set("kv_precision", options.kv_precision);
     row.set("threads", options.threads);

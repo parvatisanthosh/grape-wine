@@ -25,8 +25,10 @@ FAKE = [sys.executable, str(Path(__file__).with_name("fake_worker.py"))]
 MODELS = {"INT4": {"path": "C:/models/int4"}, "Q3B-INT4": {"path": "C:/models/q3b"}}
 
 
-def service(max_resident):
-    return ResidentService(MODELS, max_resident, worker_factory=lambda: OrbitWorker(command=FAKE))
+def service(max_resident, kv_blocks=0):
+    return ResidentService(
+        MODELS, max_resident, worker_factory=lambda: OrbitWorker(command=FAKE), kv_blocks=kv_blocks
+    )
 
 
 def request(prompt_id, prompt_tokens=256, repeat_prefix=False, max_memory_mib=None):
@@ -56,14 +58,50 @@ def test_first_request_loads_and_later_ones_do_not(two_slots):
     assert charged_load_ms(second, switched=False, executor="worker") == 0.0
 
 
-def test_only_the_same_prompt_on_a_loaded_pipeline_hits_the_cache(two_slots):
+def test_default_pool_keeps_only_the_previous_prompt(two_slots):
     conversation = request(CONVERSATION_PROMPT_ID, repeat_prefix=True)
 
     assert not two_slots.run("INT4", "gpu", conversation)["cache_hit"]
-    assert not two_slots.run("INT4", "gpu", request("run_2#5"))["cache_hit"]
     assert two_slots.run("INT4", "gpu", conversation)["cache_hit"]
+    # Any other request in between pushes the conversation out (Finding 26).
+    two_slots.run("INT4", "gpu", request("run_2#5"))
+    back = two_slots.run("INT4", "gpu", conversation)
+    assert not back["cache_hit"]
+    assert back["ttft_ms"] == 1500.0
     # Another model never saw the conversation.
     assert not two_slots.run("Q3B-INT4", "gpu", conversation)["cache_hit"]
+
+
+def test_fixed_pool_keeps_prompts_that_fit():
+    # Two 256-token prompts + 16 output tokens need 17 GPU blocks each.
+    fits = service(max_resident=1, kv_blocks=34)
+    try:
+        first, second = request("run_1#a"), request("run_2#b")
+        fits.run("INT4", "gpu", first)
+        fits.run("INT4", "gpu", second)
+        assert fits.run("INT4", "gpu", first)["cache_hit"]
+        assert fits.run("INT4", "gpu", second)["cache_hit"]
+    finally:
+        fits.close()
+
+
+def test_pool_one_block_short_loses_every_prompt_when_taking_turns():
+    short = service(max_resident=1, kv_blocks=33)
+    try:
+        first, second = request("run_1#a"), request("run_2#b")
+        short.run("INT4", "gpu", first)
+        short.run("INT4", "gpu", second)
+        assert not short.run("INT4", "gpu", first)["cache_hit"]
+        assert not short.run("INT4", "gpu", second)["cache_hit"]
+    finally:
+        short.close()
+
+
+def test_measured_hit_comes_from_timing(two_slots):
+    conversation = request(CONVERSATION_PROMPT_ID, repeat_prefix=True)
+    assert two_slots.run("INT4", "gpu", conversation)["measured_hit"] is False
+    assert two_slots.run("INT4", "gpu", conversation)["measured_hit"] is True
+    assert two_slots.run("INT4", "gpu", request("run_2#9", prompt_tokens=64))["measured_hit"] is None
 
 
 def test_least_recently_used_model_is_evicted_when_full():
@@ -222,6 +260,15 @@ def test_later_requests_teach_ttft():
     later = learn_from(generation_index=2, loaded_slots="INT4@gpu")
 
     assert later["ttft_factor_miss"] > 1.0
+
+
+def test_unexpected_cache_hit_does_not_teach_ttft():
+    # Predicted a miss (choice cache_hit = 0) but the run hit the cache.
+    surprise = learn_from(generation_index=2, loaded_slots="INT4@gpu", measured_hit=True)
+
+    assert surprise["ttft_factor_miss"] == 1.0
+    assert surprise["ttft_factor_hit"] == 1.0
+    assert surprise["tpot_factor"] > 1.0
 
 
 def test_memory_is_not_learned_while_other_models_are_loaded():

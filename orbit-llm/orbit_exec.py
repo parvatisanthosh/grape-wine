@@ -23,6 +23,7 @@ OPTION_FLAGS = {
     "prefix_caching": "--prefix-caching",
     "max_batched_tokens": "--max-batched-tokens",
     "cache_size_gb": "--cache-size-gb",
+    "kv_blocks": "--kv-blocks",
     "kv_precision": "--kv-precision",
     "threads": "--threads",
     "cores": "--cores",
