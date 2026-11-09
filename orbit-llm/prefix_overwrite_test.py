@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 
 from orbit_worker_client import OrbitWorker
+from run_experiment import prevent_sleep, require_ac_power
 
 
 MODEL = "C:/Users/parva/tinyllama-int4"
@@ -76,11 +77,14 @@ def parse_args():
         default=[0, 1],
         help="KV pool sizes in GB; 0 means dynamic.",
     )
+    parser.add_argument("--allow-battery", action="store_true")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    require_ac_power(args.allow_battery)
+    prevent_sleep()
     on_ac = on_ac_power()
     print(f"on AC power: {on_ac}", flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -907,3 +907,39 @@ prompts, 16 output tokens. A warm pass c1…cK, then a measured pass c1…cK. Ra
   - The evaluation records a timing-based `measured_hit` next to the predicted one.
   - Online correction no longer learns TTFT from a run whose hit or miss went against the
     prediction. Before, a predicted hit that missed taught ORBIT that hits are slow.
+
+**Mains-power rerun (2026-11-09, other apps closed).** Raw rows:
+`results/experiments/prefix_pool.jsonl`, `results/experiments/prefix_pool_margin.jsonl`
+and `results/chat/prefix_overwrite.jsonl`. These replace the battery timings above.
+
+| Pool | GPU hits | CPU hits | Median TTFT, hit / miss |
+|---|---|---|---|
+| Exact (K × need; K = 1, 2, 4, 8 GPU; 1, 2, 4 CPU) | 45 / 45 | 13 / 14 | GPU 22 ms / 3.8 s; CPU 62 ms / 16 s |
+| One block short | 0 / 42 | 0 / 12 | — |
+| Dynamic, K ≥ 2 | 0 / 42 | 0 / 12 | — |
+| CPU, K = 2: exact again (122) | — | 10 / 10 | — |
+| CPU, K = 2: one or two spare blocks (123, 124) | — | 20 / 20 | — |
+
+- **One miss at the exact CPU boundary,** in 24 exact-fit CPU requests. It was the second
+  of two conversations at 122 blocks, in one repeat of seven.
+- **Likely cause, from the source; not proven:**
+  - Blocks taken from the free pool keep their creation timestamp
+    (`allocate_block(hash, …)` does not reset it).
+  - `get_lru_block_to_overwrite` takes `std::min_element` over a map ordered by hash, so
+    when timestamps tie, the block chosen depends on hash order.
+  - The CPU conversation ends in a half-filled block (1936 / 32 = 60.5), while the GPU's
+    is exactly 121 full blocks. That may be why only CPU showed the miss.
+- **Recommendation:** one spare block per conversation (352 KiB on CPU). It was never
+  seen to miss, but 20 requests are too few to prove it.
+- **The A, A, B, A test on mains power,** 3 repeats per device:
+
+  | Step | GPU, dynamic | GPU, 1 GB | CPU, dynamic | CPU, 1 GB |
+  |---|---|---|---|---|
+  | A repeated immediately | 33 ms | 24 ms | 67 ms | 70 ms |
+  | A after a long prompt | 4508 ms | 24 ms | 16362 ms | 62 ms |
+  | A after a 64-token prompt | 4561 ms | 23 ms | 16308 ms | 59 ms |
+
+- **Battery vs mains, iGPU:** cold 1920-token TTFT on the iGPU was about 2.4 s in the
+  battery diagnostic but 3.8–4.5 s here. This run had Docker and WSL running, and the
+  earlier October evaluation on AC also measured 3.7–3.9 s. So the battery number is the
+  outlier, and none of the conclusions depend on it.

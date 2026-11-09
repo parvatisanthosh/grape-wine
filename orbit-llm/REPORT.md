@@ -36,7 +36,7 @@ it by learning outcome.
 | What does quantization buy? | For TinyLlama, INT8 decodes 1.8–2.0× faster than FP16 and INT4 2.2–3.1× faster, using 48% and 67% less memory, at no measurable (INT8) or 1.4% (INT4) quality cost. |
 | What limits speed? | Prompt processing (prefill) is compute-bound; token generation (decode) is memory-bandwidth-bound. Both are much faster on the iGPU (3–7× TTFT, 1.4–2.6× decode). |
 | What does the KV cache cost? | Exactly its theoretical size (11 KiB/token at u8 for TinyLlama). It is small next to the weights at 1–3B. Prompt-length activations grow memory ~12× faster. |
-| Best KV-cache feature? | Prefix caching: a repeated 1920-token prompt reaches its first token ~177× faster (13 s → 75 ms). In chat, late turns are 12–23× faster with it, and use less memory. But the default pool keeps only the latest prompt; a fixed pool of K × ⌈tokens / block⌉ blocks keeps exactly K. Cache eviction gave no benefit in chat and crashes together with prefix caching. |
+| Best KV-cache feature? | Prefix caching: a repeated 1920-token prompt reaches its first token ~177× faster (13 s → 75 ms). In chat, late turns are 12–23× faster with it, and use less memory. But the default pool keeps only the latest prompt; a fixed pool of K × ⌈tokens / block⌉ blocks keeps K (with one spare block each to be safe). Cache eviction gave no benefit in chat and crashes together with prefix caching. |
 | Minimum hardware? | 1.1B INT4: ~1.3 GB RAM. 3B INT4: ~2.5 GB (iGPU) to ~4 GB (CPU) working set. On this laptop, only the iGPU makes 3B interactive. |
 
 ---
@@ -255,16 +255,29 @@ generating 16 tokens:
 
 | Device (block size) | Blocks per conversation | K | Pool that keeps all K | One block less |
 |---|---|---|---|---|
-| iGPU (16) | 121 | 1, 2, 4 | 121, 242, 484: all hits | all misses |
-| CPU (32) | 61 | 1, 2 | 61, 122: all hits | 60 fails to run; 121: all misses |
+| iGPU (16) | 121 | 1, 2, 4, 8 | 121, 242, 484, 968: all hits | all misses |
+| CPU (32) | 61 | 1, 2, 4 | 61, 122, 244: hits (1 miss in 24) | 60 fails to run; 121, 243: all misses |
 | Either | — | 2 or more | Dynamic pool: all misses | — |
 
-- **The prediction held at every boundary tested.** It is all or nothing: taking turns
-  is the worst case for least-recently-used reuse, so one block short loses every
-  conversation, not just one.
-- **A hit is worth 100–250× in TTFT:** about 20 ms instead of 2.4–4 s on the iGPU, and
-  about 65 ms instead of 14–21 s on CPU. These timings came from runs partly on battery.
-  Whether a prompt is still cached does not depend on power.
+- **The prediction held on mains power**, for K = 1, 2, 4 and 8 on the iGPU and 1, 2 and
+  4 on CPU (`results/experiments/prefix_pool.jsonl`):
+
+  | Pool | iGPU hits | CPU hits |
+  |---|---|---|
+  | Exactly K × blocks per conversation | 45 / 45 | 23 / 24 |
+  | One block short | 0 / 42 | 0 / 12 |
+  | Default dynamic, K ≥ 2 | 0 / 42 | 0 / 12 |
+  | One or two spare blocks (CPU, K = 2) | — | 20 / 20 |
+
+- **It is all or nothing.** Taking turns is the worst case for least-recently-used reuse,
+  so one block short loses every conversation, not just one.
+- **The exact boundary is not perfectly reliable on CPU:** 1 miss in 24. The likely
+  cause, from the source, is that fresh blocks keep their creation time and ties are
+  broken by hash order. That is an inference. Twenty runs with spare blocks had no miss,
+  too few to prove the margin removes it. **A spare block per conversation costs 352 KiB
+  and is cheap insurance.**
+- **A hit is worth 170–260× in TTFT:** median 22 ms instead of 3.8 s on the iGPU, and
+  62 ms instead of 16 s on CPU.
 - **Memory is cheap at this size.** At 11 KiB per token (u8, CPU), a 1920-token
   conversation is about 21 MiB. So a 256 MiB pool would keep about 12 of them.
 - **Practical rule:** with prefix caching and more than one conversation per pipeline,
