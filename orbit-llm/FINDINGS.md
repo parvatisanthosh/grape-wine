@@ -982,3 +982,10 @@ against fixed formulas: `16 + 4 = 20` for 8-bit and `16 / 2 + 4 = 12` for 4-bit.
 "Expected 20, but got 12" is therefore an 8-bit expectation meeting a 4-bit-sized block.
 
 **Consequence:** GPU KV-cache precision can be studied after all.
+
+**Update, same day: still present in the latest release.** The Python version of the
+repro, `cpp/repro/repro_eviction_prefix.py`, was run with OpenVINO GenAI 2026.4.1.0
+(`ab01d1771e4`, pip) in a throwaway environment. Turn 4 fails with the same message and
+the same `BlockAllocator leaked blocks` errors, and with prefix caching off all 8 turns
+pass. A control run on the current 2026.3 install failed identically. The report is
+ready to paste: `notes/issue_eviction_prefix_caching_TO_FILE.md`.

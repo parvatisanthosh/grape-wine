@@ -4,7 +4,10 @@
 - Reproduced with a minimal standalone program, `cpp/repro/repro_eviction_prefix.cpp`.
 - A GitHub search of openvinotoolkit found no existing report. The error text appears
   only in a closed feature PR, openvino.genai#3209.
-- Still to check: the latest release (2026.4.1).
+- Checked on the latest release, GenAI 2026.4.1.0 (`ab01d1771e4`, pip, in a throwaway
+  environment) with `cpp/repro/repro_eviction_prefix.py`: **it still fails** at turn 4, with
+  the same leaked-block errors. With prefix caching off, all 8 turns pass.
+- Final text to paste into GitHub: `notes/issue_eviction_prefix_caching_TO_FILE.md`.
 
 **Title:** Enabling cache eviction together with prefix caching crashes on the next request: "blocks across layers must be freed simultaneously"
 
