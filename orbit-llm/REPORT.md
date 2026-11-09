@@ -234,7 +234,7 @@ fixed-size blocks (32 tokens on CPU, 16 on GPU), allocated on demand by a schedu
 |---|---|---|
 | **Prefix caching** | `enable_prefix_caching`; on by default in `LLMPipeline` | A repeated 1920-token prompt: TTFT 13 s → 72–77 ms (~177×). Unique prompts: no measurable cost (Finding 8). In chat, turn 2 of a conversation reached its first token in 0.3 s against 3.3 s for the cold first turn. |
 | **Cache size** | `cache_size` (GB), `num_kv_blocks`, or dynamic | Pre-allocation is committed in full and peaks at ~2× during set-up, but is invisible in the working set (Finding 9). **The size also decides what prefix caching can keep:** the dynamic default keeps only the latest prompt. A fixed pool keeps exactly as many prompts as fit (Finding 26, below). |
-| **KV precision** | `KV_CACHE_PRECISION` hint | CPU default is already u8. Measured sizes match theory. f16 was faster than u8 at 1k context for the 3B model (dequantization cost), but the signal is noisy. **On the iGPU, any explicit precision (u8 or f16) crashes the paged-attention kernel** — a likely OpenVINO bug, documented in `notes/upstream_issue_gpu_kv_precision.md` (Finding 17). |
+| **KV precision** | `KV_CACHE_PRECISION` hint | CPU default is already u8. Measured sizes match theory. f16 was faster than u8 at 1k context for the 3B model (dequantization cost), but the signal is noisy. On the iGPU, explicit u8 or f16 crashed the paged-attention kernel for the 3B model in October. **The crash could not be reproduced in November** with the same software, driver and settings, and its cause is unknown (Finding 27). |
 | **Attention backend** | `ATTENTION_BACKEND = PA` or `SDPA` | SDPA grew memory 2× faster with prompt length (+462 vs +222 MiB, 256 → 1920 tokens) and was 69% slower to first token. It is consistent with materializing the full attention-score matrix (Finding 7). |
 | **Cache eviction** | `use_cache_eviction` + `CacheEvictionConfig(start, recent, max)` | No benefit in chat, and it crashes together with prefix caching. See below. |
 
@@ -395,7 +395,7 @@ requests they all served.
   not task accuracy.
 - **GPU memory accounting.** iGPU buffers live in shared system memory and are only
   partly visible in process memory counters.
-- **KV-cache precision on the GPU** could not be studied because of the crash above.
+- **KV-cache precision on the GPU** was not studied: it crashed in October, and it works again now (Finding 27).
 - **Cache eviction was tested on chat only**, with 80-token answers. Its intended use,
   very long single generations, was not tested.
 - **The ORBIT evaluation is small** (24 requests per system) and uses a synthetic workload

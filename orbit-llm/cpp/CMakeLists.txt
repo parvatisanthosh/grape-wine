@@ -28,7 +28,15 @@ target_link_libraries(orbit_worker PRIVATE openvino::genai psapi pdh advapi32)
 add_executable(orbit_chat orbit_chat.cpp telemetry.hpp)
 target_link_libraries(orbit_chat PRIVATE openvino::genai psapi)
 
+# Minimal reproductions for the two upstream bug reports (notes/upstream_issue_*.md).
+add_executable(repro_gpu_kv_precision repro/repro_gpu_kv_precision.cpp)
+target_link_libraries(repro_gpu_kv_precision PRIVATE openvino::genai)
+add_executable(repro_eviction_prefix repro/repro_eviction_prefix.cpp)
+target_link_libraries(repro_eviction_prefix PRIVATE openvino::genai)
+
 if(MSVC)
+    target_compile_options(repro_gpu_kv_precision PRIVATE /W4 /utf-8)
+    target_compile_options(repro_eviction_prefix PRIVATE /W4 /utf-8)
     target_compile_options(orbit_run PRIVATE /W4 /utf-8)
     target_compile_options(orbit_chat PRIVATE /W4 /utf-8)
     target_compile_options(orbit_worker PRIVATE /W4 /utf-8)

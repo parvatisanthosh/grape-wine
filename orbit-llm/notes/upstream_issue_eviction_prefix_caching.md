@@ -1,4 +1,10 @@
-# Draft issue for openvinotoolkit/openvino.genai (not filed)
+# Draft issue for openvinotoolkit/openvino.genai (not filed): ready to file
+
+**Status, 2026-11-09:**
+- Reproduced with a minimal standalone program, `cpp/repro/repro_eviction_prefix.cpp`.
+- A GitHub search of openvinotoolkit found no existing report. The error text appears
+  only in a closed feature PR, openvino.genai#3209.
+- Still to check: the latest release (2026.4.1).
 
 **Title:** Enabling cache eviction together with prefix caching crashes on the next request: "blocks across layers must be freed simultaneously"
 
@@ -47,8 +53,27 @@ with a clear message.
   which the prefix-cache path does not expect. This is an inference from reading the
   source, not a confirmed root cause.
 
+## Minimal reproduction (attach `cpp/repro/repro_eviction_prefix.cpp`)
+
+About 60 lines. `SchedulerConfig` with `enable_prefix_caching = true`, `use_cache_eviction
+= true` and `CacheEvictionConfig(32, 64, 256, NORM_SUM)`. A `ChatHistory` loop, 80 new
+tokens per turn, TinyLlama-1.1B-Chat INT4 on CPU:
+
+```
+turn 1 OK, prompt tokens 49
+turn 2 OK, prompt tokens 180
+turn 3 OK, prompt tokens 311
+turn 4 FAILED: Check 'is_all_free' failed at src/cpp/src/continuous_batching/cache/block_manager.hpp:371:
+blocks across layers must be freed simultaneously
+[ERROR] BlockManager leaked sequence block tables: 1, first leaked sequence id: 3
+[ERROR] BlockAllocator leaked blocks. Expected num free blocks: 17, actual: 9
+```
+
+With `enable_prefix_caching = false`, all 8 turns succeed. The failure starts at the first
+turn whose prompt exceeds the eviction budget of 256 tokens, and the pipeline also leaks
+blocks.
+
 ## Before filing
 
-- Check for an existing issue: search "freed simultaneously" and "cache eviction prefix".
-- Reproduce with a minimal standalone program, and attach it.
+- Done 2026-11-09: no existing issue found; minimal program written and run.
 - Try the latest nightly to see if it is already fixed.

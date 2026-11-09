@@ -27,7 +27,7 @@ $env:Path = "C:\Users\parva\venv\Lib\site-packages\openvino\libs;$env:Path"
 | `--cores` | `any`, `pcore`, `ecore` | CPU core type (CPU only) |
 | `--cache-dir` | path | Compiled-model cache; use it for the GPU |
 | `--prefix-caching` | `on` (default), `off` | Reuse the KV cache of earlier turns |
-| `--kv-precision` | `default`, `f32`, `f16`, `u8` | KV-cache element type (CPU only; explicit precision crashes the GPU path on GenAI 2026.3) |
+| `--kv-precision` | `default`, `f32`, `f16`, `u8` | KV-cache element type. `orbit_chat` allows it on CPU only: it crashed the GPU path in October, and that could not be reproduced in November (Findings 17 and 27) |
 | `--evict` | `START:RECENT:MAX` | KV-cache eviction budget in tokens (multiples of the block size: 32 on CPU, 16 on GPU) |
 | `--max-new-tokens`, `--temperature`, `--repetition-penalty`, `--system` | | Generation settings |
 | `--script FILE`, `--json-out FILE` | | Replay a conversation non-interactively and save per-turn metrics |

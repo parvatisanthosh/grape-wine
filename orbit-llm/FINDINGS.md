@@ -943,3 +943,42 @@ and `results/chat/prefix_overwrite.jsonl`. These replace the battery timings abo
   battery diagnostic but 3.8–4.5 s here. This run had Docker and WSL running, and the
   earlier October evaluation on AC also measured 3.7–3.9 s. So the battery number is the
   outlier, and none of the conclusions depend on it.
+
+### Finding 27 — The two OpenVINO problems: one reproduced minimally, one gone
+
+**Search first (2026-11-09).** The GitHub search API, over all openvinotoolkit
+repositories, found no existing report of either error. It did turn up
+openvinotoolkit/openvino#39615 (opened 2026-11-08): the same GPU `Incorrect block size
+… BY_CHANNEL` check, on an Arc B60 with f32 inference precision and u4 KV cache.
+
+**Eviction + prefix caching: reproduced in a standalone program.**
+`cpp/repro/repro_eviction_prefix.cpp` is about 60 lines: `ChatHistory`, 80 tokens per
+turn, `CacheEvictionConfig(32, 64, 256)`, TinyLlama INT4 on CPU.
+- With prefix caching on, turn 4 fails with `blocks across layers must be freed
+  simultaneously`, followed by `BlockAllocator leaked blocks` errors.
+- With prefix caching off, all 8 turns succeed.
+- Draft: `notes/upstream_issue_eviction_prefix_caching.md`, ready to file once it has been
+  checked on the latest release.
+
+**GPU + explicit KV precision: no longer reproducible.** The October crash rows were all
+Qwen-3B on the iGPU with explicit u8 or f16. None were TinyLlama, so the earlier draft's
+claim that it was also seen with TinyLlama was wrong, and it has been corrected. Rerun
+today:
+- `orbit_run`, Qwen-3B INT4 on GPU, u8 and f16, 256 and 1024 tokens, shared model cache:
+  all 4 succeed;
+- `cpp/repro/repro_gpu_kv_precision.cpp` with Qwen-3B, u8 and default: both succeed;
+- TinyLlama INT4 with u8 and f16, with no cache, a fresh cache, the shared cache and a
+  second load: all succeed.
+
+The OpenVINO install (25 Aug), the GenAI build (`bd8d6542`), the driver (32.0.101.5542)
+and the code that passes the precision are all unchanged. Today's u8 runs compiled new
+entries in `ov_cache/gpu`, which suggests that on 2026-10-06 a cached model was loaded
+instead. That is unconfirmed. **The cause is unknown, so the draft is marked "do not
+file".**
+
+Source reading for the record: in OpenVINO 2026.3, `transformations_pipeline.cpp` sizes a
+BY_CHANNEL key block from the inference precision, while `paged_attention.cpp` checks
+against fixed formulas: `16 + 4 = 20` for 8-bit and `16 / 2 + 4 = 12` for 4-bit.
+"Expected 20, but got 12" is therefore an 8-bit expectation meeting a 4-bit-sized block.
+
+**Consequence:** GPU KV-cache precision can be studied after all.

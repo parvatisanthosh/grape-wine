@@ -135,8 +135,9 @@ Options parse_arguments(int argc, char* argv[]) {
         options.prefix_caching = "off";
     }
     if (options.device != "CPU" && (options.cores != "any" || options.kv_precision != "default")) {
-        // Explicit KV precision crashes the GPU paged-attention path on
-        // GenAI 2026.3 (FINDINGS Finding 17).
+        // Explicit KV precision crashed the GPU paged-attention path in October
+        // (Finding 17). It could not be reproduced in November, with an unknown
+        // cause (Finding 27), so it stays CPU-only until it has been studied.
         throw std::invalid_argument("--cores and --kv-precision apply to the CPU device only");
     }
     return options;
