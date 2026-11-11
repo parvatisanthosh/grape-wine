@@ -989,3 +989,149 @@ repro, `cpp/repro/repro_eviction_prefix.py`, was run with OpenVINO GenAI 2026.4.
 the same `BlockAllocator leaked blocks` errors, and with prefix caching off all 8 turns
 pass. A control run on the current 2026.3 install failed identically. The report is
 ready to paste: `notes/issue_eviction_prefix_caching_TO_FILE.md`.
+
+### Finding 28 — TinyLlama on HumanEval: 6–7%, at every precision
+
+Same notebook and settings as Finding 25 (`colab/humaneval_tinyllama.ipynb`), on the
+laptop's own TinyLlama files, uploaded to Drive and checked by the SHA-256 of
+`openvino_model.bin`. Raw rows: `results/quality_humaneval_tinyllama/`. Summary:
+`python summarize_humaneval.py results/quality_humaneval_tinyllama`.
+
+| TinyLlama-1.1B | Passed | 95% CI | Hit 512-token limit |
+|---|---|---|---|
+| FP16 | 10/164 (6.1%) | 3.3–10.9% | 35 |
+| INT8 | 11/164 (6.7%) | 3.8–11.6% | 32 |
+| INT4 | 12/164 (7.3%) | 4.2–12.4% | 40 |
+
+- **Quantization does not measurably change it:** FP16 vs INT4 split 4 / 6 problems,
+  p = 0.75. Pass rates are so low that this says little about INT4's cost.
+- **How it fails:** about 45 of 164 failures per model are `NameError`, and most of those
+  (33–45) come from one habit. The model writes `for I in range(...)`, then uses `i`.
+  Other failures are missing imports and wrong results. These are model errors, not
+  scoring errors: the answers were read, and the official solutions pass the same harness.
+- **For ORBIT's code-quality floor (50%):** even if every `NameError` answer had passed,
+  TinyLlama would reach at most 56–63 of 164 (34–38%). It is barred from code requests in
+  every case. Re-running the v2 dry run with the measured scores changes nothing.
+- **Model size matters far more than precision:** Qwen2.5-Coder-3B passes 82–84% at every
+  precision, TinyLlama 6–7%.
+
+### Finding 29 — Evaluation v2 on real data: ORBIT beats both fixed baselines, and ties a simple rule
+
+The pre-registered evaluation of `notes/evaluation_v2_plan.md`, run overnight on
+2026-11-11 on mains power (`run_overnight.ps1`, `evaluate_v2.py`).
+- **Workload:** 300 test requests with real lengths: 145 chat turns (oasst1), 81
+  one-shot and 74 code requests (Azure 2023 trace).
+- **Tuning:** the best fixed configuration was chosen on a separate 300-request tuning
+  trace.
+- **How it ran:** one system was loaded at a time, in blocks of 25 requests (plan
+  section 12).
+- **Raw data:** `results/evaluation_v2/`. Analysis: `analysis_corrected.txt`, from
+  `python evaluate_v2.py analyze results/evaluation_v2/pass_{A,B,C}.jsonl --corrections results/evaluation_v2/corrections.jsonl --sweep results/evaluation_v2/sweep_tuning.jsonl`.
+
+**A measurement fault, found and corrected first.** Five requests reported a ~50 ms time
+to first token on a 4,096-token prompt for the 3B model, against ~23 s for every other
+prompt that long. Re-running them one at a time showed real prefix-cache hits.
+- **Cause:** the Qwen tokenizer IR truncates from the **left** at 32,768 tokens
+  (`Truncate` with `max_length=32768` and side `left`, in `openvino_tokenizer.xml`). Our
+  synthetic prompt text for targets above about 4,090 tokens was longer than that. So the
+  request tag at its start was cut off, and two prompts of the same length became
+  identical (`prompt_uniqueness_check.py`).
+- **TinyLlama's prompts were always distinct,** although its IR also lists a left
+  truncation, at 2,047 tokens. Earlier results such as Finding 26 are unaffected.
+- **Fix:** `create_exact_token_input` builds only the text it needs and checks that the
+  tag survives. Below the limit it gives the same token ids as before
+  (`cpp/repro/check_prompt_ids.cpp`).
+- **Checked after the fix:** a 4,096-token prompt with another tag now misses the cache
+  (24.4 s); before, it hit in 47 ms. The before and after runs are
+  `results/prompt_uniqueness_check_before_fix.jsonl` and
+  `results/prompt_uniqueness_check.jsonl`.
+- **Correction:** the 9 affected rows were re-measured with unique prompts
+  (`rerun_duplicate_prompts.py`). Each gained a TTFT violation (24–25 s). Plan section 13
+  records this. The numbers below are corrected; uncorrected, ORBIT and the rule each have
+  2 fewer violations and ORBIT vs best fixed is 14 to 0.
+
+**Service-level violations, all 300 test requests (lower is better):**
+
+| System | Configuration | Chat (145) | One-shot (81) | Code (74) | Total | 95% CI |
+|---|---|---|---|---|---|---|
+| OpenVINO default | TinyLlama INT8 @ CPU | 13 | 65 | 74 | 152 (50.7%) | 45.0–56.3% |
+| Best fixed (tuned) | TinyLlama INT4 @ iGPU | 0 | 22 | 74 | 96 (32.0%) | 27.0–37.5% |
+| Best fixed, A/A rerun | TinyLlama INT4 @ iGPU | 0 | 21 | 74 | 95 (31.7%) | 26.7–37.1% |
+| Simple rule | 3B for code or long prompts, else TinyLlama INT4 @ iGPU | 0 | 21 | 63 | 84 (28.0%) | 23.2–33.3% |
+| ORBIT without correction | Twin + optimizer | 0 | 25 | 63 | 88 (29.3%) | 24.5–34.7% |
+| **ORBIT** | all three layers | 0 | 21 | 63 | **84 (28.0%)** | 23.2–33.3% |
+
+**Paired tests (same requests):**
+
+| Pair | Only first broke | Only second broke | McNemar p | Median total-time ratio (95% CI), both served |
+|---|---|---|---|---|
+| **ORBIT vs best fixed** (primary, interleaved in pass A) | 0 | 12 | **0.0005** | 0.997 (0.988–1.005), 216 requests |
+| ORBIT vs OpenVINO default | 0 | 68 | 7 × 10⁻²¹ | 0.352 (0.350–0.356), 216 |
+| ORBIT vs simple rule | 1 | 1 | 1.0 | 0.994 (0.991–0.999), 300 |
+| ORBIT vs ORBIT without correction | 1 | 5 | 0.22 | 1.003 (0.997–1.008), 300 |
+| Best fixed vs its A/A rerun (noise floor) | 1 | 0 | 1.0 | 1.016 (1.009–1.022), 216 |
+
+- **The primary test is significant:** ORBIT had 12 fewer violations than the tuned fixed
+  configuration, and was never worse on any request (p = 0.0005).
+  - 11 of the 12 come from routing: short code requests that ORBIT sent to the 3B model,
+    which met the limit. Best fixed may not serve code with TinyLlama (HumanEval 7%,
+    Finding 28).
+  - The 12th (request 225) is timing noise. Both systems ran TinyLlama INT4 on the iGPU,
+    with TTFT 1.97 s against 2.25 s at a 2 s limit. Request 8 is the same kind of
+    borderline case, and is the A/A run's only discordant request.
+  - Without request 225 the result is 11 to 0, p = 0.001.
+  - On the 216 requests both served, ORBIT was exactly as fast (ratio 0.997).
+- **ORBIT ties the simple rule** (84 vs 84, one discordant request each way), as the dry
+  run predicted.
+  - On this laptop, "use the 3B model when the request needs it, else TinyLlama INT4 on
+    the iGPU" captures the whole benefit.
+  - ORBIT's other choices (INT8 instead of INT4 on the iGPU, for 27 requests) changed
+    only one outcome: request 8, at the 2 s borderline (2.07 s against the rule's
+    1.97 s). They made those requests slower in total time, because INT8 decodes more
+    slowly.
+- **The default export on the CPU is the worst choice:** 68 more violations than ORBIT,
+  and 2.8× slower on the requests both served. Its chat violations are TTFT over 2 s.
+- **The noise floor:** the A/A rerun differs by 1 violation and 1.6% in time, and that
+  small time drift is statistically detectable (Wilcoxon p = 2 × 10⁻⁸). Cross-pass
+  differences smaller than about 2% are therefore not claimed. That covers ORBIT vs rule
+  (0.6%) and ORBIT vs no correction (0.3%).
+- **Online correction (Layer 3) helps the predictions, not the outcome:**
+
+  | | ORBIT | ORBIT without correction |
+  |---|---|---|
+  | Median TTFT prediction error | 14% | 30% |
+  | Median decode-speed (TPOT) prediction error | 5% | 61% |
+  | Model switches (load time) | 26 (100 s) | 69 (256 s) |
+  | Violations | 84 | 88 (p = 0.22) |
+
+  Without correction, the Twin overestimates decode time on the iGPU. That makes the
+  optimizer swap models more often.
+- **Most remaining violations are impossible on this hardware**, and fail for every
+  system:
+  - *Code:* the 3B model reaches its first token within 1.5 s only for prompts up to
+    about 300 tokens (11 of 74 met it). The median code prompt has 1,245 tokens, and at
+    ~5.5 ms per token on the iGPU, 4,096 tokens take ~23 s.
+  - *One-shot:* all 21 that broke had long prompts, of at least about 1,300 tokens. 10
+    were too long for TinyLlama and too slow on the 3B model. The other 11 fit TinyLlama,
+    but it needs a little over 2 s to process them on the iGPU.
+  - *Chat:* every iGPU system met every chat limit.
+- **What ORBIT and the rule cost:** they keep two models resident, with a median peak
+  of 3.5 GB against 1.1 GB for the fixed TinyLlama. Free RAM fell below 512 MiB on 36
+  ORBIT requests. Their TTFT matched the rule's (ratio 0.98), so paging did not distort
+  the timings.
+- **The dry run predicted the ranking, not the counts:**
+
+  | Test trace | Default | Best fixed | Rule | ORBIT |
+  |---|---|---|---|---|
+  | Twin's prediction (plan section 7) | 168 | 112 (INT8 @ iGPU) | 97 | 96 |
+  | Measured | 152 | 96 (INT4 @ iGPU) | 84 | 84 |
+
+  - The Twin was pessimistic by 12–16 violations for every system.
+  - The measured sweep chose INT4 over INT8 on the iGPU (tuning trace: 112 vs 117
+    violations). The dry run had called these two nearly tied.
+- **Prefix caching hardly mattered here.** Real chat prompts are short (median 61
+  tokens), and chat met its limits anyway.
+  - ORBIT's hit predictor covers exact repeats only. So it never predicted the partial
+    reuse a follow-up gets from its earlier turn: follow-ups ran at 1.6 ms per prompt
+    token, against 2.9 for first turns.
+  - This errs on the safe side (cold TTFT predicted), and is left as future work.

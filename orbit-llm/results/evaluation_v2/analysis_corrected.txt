@@ -1,0 +1,153 @@
+Tuning sweep, as measured:
+               violations  requests
+candidate                          
+INT4@gpu              112       300
+INT8@gpu              117       300
+FP16@gpu              128       300
+Q3B-INT4@gpu          137       300
+INT8@cpu_auto         147       300
+Tuning sweep, with 3 re-measured rows:
+               violations  requests
+candidate                          
+INT4@gpu              112       300
+INT8@gpu              117       300
+FP16@gpu              128       300
+Q3B-INT4@gpu          140       300
+INT8@cpu_auto         147       300
+
+As measured:
+system    best_fixed  best_fixed_aa  default  orbit  orbit_nocorr  rule  All
+stream                                                                      
+chat               0              0       13      0             0     0   13
+code              74             74       74     62            62    62  408
+one_shot          22             21       65     20            24    20  172
+All               96             95      152     82            86    82  593
+{
+ "pair": "orbit vs best_fixed",
+ "requests": 300,
+ "only orbit broke": 0,
+ "only best_fixed broke": 14,
+ "mcnemar_p": 0.0001220703125,
+ "both_served": 216,
+ "median_time_ratio": 0.9974368107070454,
+ "ratio_ci_low": 0.9884014066790868,
+ "ratio_ci_high": 1.0053603456567572,
+ "wilcoxon_p": 0.8627278219052823
+}
+{
+ "pair": "best_fixed vs best_fixed_aa",
+ "requests": 300,
+ "only best_fixed broke": 1,
+ "only best_fixed_aa broke": 0,
+ "mcnemar_p": 1.0,
+ "both_served": 216,
+ "median_time_ratio": 1.0156018148208437,
+ "ratio_ci_low": 1.0090495966292654,
+ "ratio_ci_high": 1.0218040434313571,
+ "wilcoxon_p": 1.551486011587484e-08
+}
+{
+ "pair": "orbit vs rule",
+ "requests": 300,
+ "only orbit broke": 1,
+ "only rule broke": 1,
+ "mcnemar_p": 1.0,
+ "both_served": 300,
+ "median_time_ratio": 0.9941352433808671,
+ "ratio_ci_low": 0.9905563778072605,
+ "ratio_ci_high": 0.9991782724250554,
+ "wilcoxon_p": 0.9925717530554351
+}
+{
+ "pair": "orbit vs default",
+ "requests": 300,
+ "only orbit broke": 0,
+ "only default broke": 70,
+ "mcnemar_p": 1.6940658945086007e-21,
+ "both_served": 216,
+ "median_time_ratio": 0.3521492059129823,
+ "ratio_ci_low": 0.34991311353912835,
+ "ratio_ci_high": 0.3555018389052338,
+ "wilcoxon_p": 3.427297285516997e-37
+}
+{
+ "pair": "orbit vs orbit_nocorr",
+ "requests": 300,
+ "only orbit broke": 1,
+ "only orbit_nocorr broke": 5,
+ "mcnemar_p": 0.21875,
+ "both_served": 300,
+ "median_time_ratio": 1.0029458586598872,
+ "ratio_ci_low": 0.9970139614742672,
+ "ratio_ci_high": 1.0080186985141206,
+ "wilcoxon_p": 0.49043976116284316
+}
+
+With corrections: 6 rows re-measured with unique prompts (Finding 29):
+system    best_fixed  best_fixed_aa  default  orbit  orbit_nocorr  rule  All
+stream                                                                      
+chat               0              0       13      0             0     0   13
+code              74             74       74     63            63    63  411
+one_shot          22             21       65     21            25    21  175
+All               96             95      152     84            88    84  599
+{
+ "pair": "orbit vs best_fixed",
+ "requests": 300,
+ "only orbit broke": 0,
+ "only best_fixed broke": 12,
+ "mcnemar_p": 0.00048828125,
+ "both_served": 216,
+ "median_time_ratio": 0.9974368107070454,
+ "ratio_ci_low": 0.9884014066790868,
+ "ratio_ci_high": 1.0053603456567572,
+ "wilcoxon_p": 0.8627278219052823
+}
+{
+ "pair": "best_fixed vs best_fixed_aa",
+ "requests": 300,
+ "only best_fixed broke": 1,
+ "only best_fixed_aa broke": 0,
+ "mcnemar_p": 1.0,
+ "both_served": 216,
+ "median_time_ratio": 1.0156018148208437,
+ "ratio_ci_low": 1.0090495966292654,
+ "ratio_ci_high": 1.0218040434313571,
+ "wilcoxon_p": 1.551486011587484e-08
+}
+{
+ "pair": "orbit vs rule",
+ "requests": 300,
+ "only orbit broke": 1,
+ "only rule broke": 1,
+ "mcnemar_p": 1.0,
+ "both_served": 300,
+ "median_time_ratio": 0.9941352433808671,
+ "ratio_ci_low": 0.9905563778072605,
+ "ratio_ci_high": 0.9991782724250554,
+ "wilcoxon_p": 0.9432740218829977
+}
+{
+ "pair": "orbit vs default",
+ "requests": 300,
+ "only orbit broke": 0,
+ "only default broke": 68,
+ "mcnemar_p": 6.776263578034403e-21,
+ "both_served": 216,
+ "median_time_ratio": 0.3521492059129823,
+ "ratio_ci_low": 0.34991311353912835,
+ "ratio_ci_high": 0.3555018389052338,
+ "wilcoxon_p": 3.427297285516997e-37
+}
+{
+ "pair": "orbit vs orbit_nocorr",
+ "requests": 300,
+ "only orbit broke": 1,
+ "only orbit_nocorr broke": 5,
+ "mcnemar_p": 0.21875,
+ "both_served": 300,
+ "median_time_ratio": 1.0029458586598872,
+ "ratio_ci_low": 0.9968021235997385,
+ "ratio_ci_high": 1.0080186985141206,
+ "wilcoxon_p": 0.457596781343943
+}
+Only orbit vs best_fixed ran interleaved, in pass A. Every other pair spans two passes, so it is paired by request but not run at the same time.

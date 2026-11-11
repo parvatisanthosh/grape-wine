@@ -63,7 +63,9 @@ def test_judge_checks_each_limit():
     row = {"status": "success", "ttft_ms": 2500.0, "tpot_ms_per_token": 120.0,
            "generation_ms": 4000.0, "sys_available_ram_mib": 400.0}
     result = ev.judge(request, row, load_ms=100.0)
-    assert result["violations"] == "ttft,tpot,memory"
+    # Low free RAM is recorded, not judged: the other system's models share the machine.
+    assert result["violations"] == "ttft,tpot"
+    assert result["available_ram_mib"] == 400.0
     assert result["total_ms"] == 4100.0
     assert ev.judge(request, {"status": "error"}, 0.0)["violations"] == "failed"
 
@@ -89,7 +91,7 @@ def test_sweep_compare_and_analyze_run_end_to_end(tmp_path, context):
     assert (tmp_path / "best_fixed.json").exists()
     assert len(load_jsonl(sweep_out)) == 8  # 2 candidates x 4 requests
 
-    for pass_name in ("A", "B"):
+    for pass_name in sorted(ev.PASSES):
         out = tmp_path / f"pass_{pass_name}.jsonl"
         ev.compare(trace, pass_name, best, out, worker_factory=fake_worker, context=context)
         rows = load_jsonl(out)
@@ -103,5 +105,47 @@ def test_sweep_compare_and_analyze_run_end_to_end(tmp_path, context):
     # ORBIT never sends code or long prompts to TinyLlama.
     assert {r["candidate"].split("@")[0] for r in orbit_rows if r["index"] in (2, 3)} <= {"Q3B-INT4"}
 
-    results = ev.analyze([tmp_path / "pass_A.jsonl", tmp_path / "pass_B.jsonl"])
+    results = ev.analyze([tmp_path / f"pass_{name}.jsonl" for name in sorted(ev.PASSES)])
     assert any(result["pair"] == "orbit vs best_fixed" for result in results)
+
+
+def test_block_mode_serves_every_request_once_per_system(tmp_path, context):
+    trace = write_trace(tmp_path / "t.jsonl")
+    out = tmp_path / "pass_A_blocks.jsonl"
+    ev.compare(trace, "A", "INT4@gpu", out, worker_factory=fake_worker, context=context, block_size=2)
+    rows = load_jsonl(out)
+    assert sorted((r["system"], r["index"]) for r in rows) == sorted(
+        (system, index) for system in ev.PASSES["A"] for index in (1, 2, 3, 4)
+    )
+    # Resuming repeats nothing.
+    ev.compare(trace, "A", "INT4@gpu", out, worker_factory=fake_worker, context=context, block_size=2)
+    assert len(load_jsonl(out)) == len(rows)
+
+
+def test_corrections_replace_only_the_named_rows():
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"system": "orbit", "index": 1, "candidate": "Q3B-INT4@gpu", "violated": False},
+        {"system": "rule", "index": 1, "candidate": "Q3B-INT4@gpu", "violated": False},
+        {"system": "orbit", "index": 2, "candidate": "INT4@gpu", "violated": False},
+    ])
+    corrections = pd.DataFrame([
+        {"file": "pass_A.jsonl", "system": "orbit", "index": 1, "candidate": "Q3B-INT4@gpu",
+         "violated": True},
+        {"file": "sweep_tuning.jsonl", "system": "fixed", "index": 1, "candidate": "Q3B-INT4@gpu",
+         "violated": True},
+    ])
+    fixed, count = ev.apply_corrections(frame, corrections)
+    assert count == 1 and len(fixed) == 3
+    by_key = fixed.set_index(["system", "index"])["violated"].astype(bool)
+    assert by_key[("orbit", 1)] and not by_key[("rule", 1)] and not by_key[("orbit", 2)]
+
+    sweep = pd.DataFrame([
+        {"system": "fixed", "index": 1, "candidate": "Q3B-INT4@gpu", "violated": False},
+        {"system": "fixed", "index": 1, "candidate": "INT4@gpu", "violated": True},
+    ])
+    fixed, count = ev.apply_corrections(sweep, corrections, "sweep_tuning.jsonl")
+    assert count == 1
+    assert fixed.set_index("candidate")["violated"].astype(bool).to_dict() == {
+        "INT4@gpu": True, "Q3B-INT4@gpu": True}

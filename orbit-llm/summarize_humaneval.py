@@ -1,6 +1,7 @@
 """Summarize the HumanEval results scored on Colab. Runs no model-written code.
 
-    python summarize_humaneval.py
+    python summarize_humaneval.py                                      # Qwen2.5-Coder-3B
+    python summarize_humaneval.py results/quality_humaneval_tinyllama  # TinyLlama
 """
 
 import json
@@ -64,14 +65,15 @@ def compare(first, second):
 
 
 def main():
-    runs = load_runs()
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else RESULTS
+    runs = load_runs(folder)
     summary = {
         "models": {tag: summarize_model(runs[tag]) for tag in TAGS},
         "comparisons": {
             f"{a}_vs_{b}": compare(runs[a], runs[b]) for a, b in COMPARISONS
         },
     }
-    (RESULTS / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (folder / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     for tag, row in summary["models"].items():
         print(

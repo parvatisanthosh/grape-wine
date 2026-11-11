@@ -1,6 +1,5 @@
-﻿
 Context limits: {'FP16': 2048, 'INT8': 2048, 'INT4': 2048, 'Q3B-INT4': 32768}
-HumanEval pass rates: {'FP16': None, 'INT8': None, 'INT4': None, 'Q3B-INT4': 0.823}
+HumanEval pass rates: {'FP16': 0.061, 'INT8': 0.067, 'INT4': 0.073, 'Q3B-INT4': 0.823}
 
 Best fixed configuration on the tuning trace (300 requests), predicted:
     candidate  violations  served_total_s
@@ -36,5 +35,3 @@ best_fixed    0.64
 default       1.22
 orbit         0.65
 rule          0.62
-
-

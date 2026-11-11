@@ -539,15 +539,34 @@ ov::genai::TokenizedInputs create_exact_token_input(ov::genai::Tokenizer& tokeni
     const auto [variant, tag] = split_prompt_id(prompt_id);
     const auto& [opening, body] = PROMPT_VARIANTS.at(variant);
 
-    std::string text = tag.empty() ? opening : "Request " + tag + ". " + opening;
-    for (std::size_t repeat = 0; repeat < target_tokens + 10; ++repeat) {
+    const std::string header = tag.empty() ? opening : "Request " + tag + ". " + opening;
+
+    // Repeat the body just enough to pass target_tokens, then keep the first
+    // target_tokens ids. The text must stay short: exported tokenizers carry a
+    // LEFT truncation step (Qwen2.5: 32,768 tokens), and an over-long text
+    // silently loses its start, tag included. Prompts with different tags then
+    // become identical and share prefix-cache blocks (Finding 29). The first
+    // target_tokens ids are the same as with any longer text.
+    const auto body_ids = tokenizer.encode(body, {ov::genai::add_special_tokens(false)});
+    const std::size_t body_tokens = std::max<std::size_t>(1, body_ids.input_ids.get_shape().at(1));
+    // Counted alone, the body may differ by a token or two from mid-text.
+    const std::size_t repeats = target_tokens / std::max<std::size_t>(1, body_tokens - 2) + 3;
+    std::string text = header;
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
         text += body;
     }
-
-    // Not every exported tokenizer honours max_length/truncation (Qwen2.5's
-    // does not), so encode everything and keep the first target_tokens ids.
-    // For tokenizers that do truncate, this gives the identical result.
     const auto tokenized = tokenizer.encode(text, {ov::genai::add_special_tokens(true)});
+
+    // Guard: the text must still start with its header after tokenization.
+    const auto header_ids = tokenizer.encode(header, {ov::genai::add_special_tokens(true)});
+    const std::size_t header_check = header_ids.input_ids.get_shape().at(1) - 1;  // last id may merge
+    const std::int64_t* got = tokenized.input_ids.data<const std::int64_t>();
+    const std::int64_t* want = header_ids.input_ids.data<const std::int64_t>();
+    if (tokenized.input_ids.get_shape().at(1) < header_check ||
+        !std::equal(want, want + header_check, got)) {
+        throw std::runtime_error(prompt_id + ": the tokenizer dropped the start of the prompt text "
+                                 "(truncation), so prompts would not be unique");
+    }
 
     const std::size_t available_tokens = tokenized.input_ids.get_shape().at(1);
     if (available_tokens < target_tokens) {

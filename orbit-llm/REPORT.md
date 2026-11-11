@@ -23,7 +23,7 @@ GenAI 2026.3 (built from source). **Models:**
 
 Every number in this report was measured on this machine. The full lab log, with
 methodology, raw-data paths and the reasoning behind each result, is
-**[FINDINGS.md](FINDINGS.md)** (Findings 1–19 plus later sections). This report summarizes
+**[FINDINGS.md](FINDINGS.md)** (Findings 1–29). This report summarizes
 it by learning outcome.
 
 ---
@@ -38,6 +38,7 @@ it by learning outcome.
 | What does the KV cache cost? | Exactly its theoretical size (11 KiB/token at u8 for TinyLlama). It is small next to the weights at 1–3B. Prompt-length activations grow memory ~12× faster. |
 | Best KV-cache feature? | Prefix caching: a repeated 1920-token prompt reaches its first token ~177× faster (13 s → 75 ms). In chat, late turns are 12–23× faster with it, and use less memory. But the default pool keeps only the latest prompt; a fixed pool of K × ⌈tokens / block⌉ blocks keeps K (with one spare block each to be safe). Cache eviction gave no benefit in chat and crashes together with prefix caching. |
 | Minimum hardware? | 1.1B INT4: ~1.3 GB RAM. 3B INT4: ~2.5 GB (iGPU) to ~4 GB (CPU) working set. On this laptop, only the iGPU makes 3B interactive. |
+| Does automatic configuration help? | On 300 real-length requests, ORBIT broke 84 service limits, against 96 for the best fixed configuration (p = 0.0005) and 152 for OpenVINO's default. The gain comes from sending code to the 3B model, and a simple rule does equally well (84). |
 
 ---
 
@@ -151,6 +152,10 @@ Evidence:
     percentage points.
   - INT8 gave the exact same answer as FP16 on 137 problems, but INT4 did on only 47. So
     INT4 changes the text often and rarely changes whether the code works.
+  - **TinyLlama-1.1B passes 10, 11 and 12 of 164 (6–7%)** at FP16, INT8 and INT4, on its
+    own laptop files (Finding 28). At this size the model, not the precision, limits
+    quality: most failures are real coding mistakes. A common one is naming a loop
+    variable `I` and then using `i`.
   - These pass rates depend on the prompt used, so they are not comparable with published
     HumanEval scores. Colab supplied quality numbers only; all speed and memory results
     in this report come from the laptop. The INT4 model is the same file on both machines.
@@ -384,22 +389,77 @@ requests they all served.
   between two repeats pushes the earlier prompt out. ORBIT also refused those follow-ups,
   so it never warmed its own cache.
 
+### Evaluation v2: a real workload, a pre-registered test (Finding 29)
+
+The preliminary result led to a second evaluation, fixed in advance in
+[notes/evaluation_v2_plan.md](notes/evaluation_v2_plan.md) before any data existed.
+- **Workload:** 300 test requests with real lengths: chat turns from OpenAssistant
+  (oasst1), and one-shot and code requests from the Azure 2023 LLM inference trace.
+- **Limits per class:**
+  - chat and one-shot: first token within 2 s, and at least 10 tokens/s;
+  - code: first token within 1.5 s, and a model that passes at least 50% of HumanEval.
+- **Systems:** five, all run on the laptop on mains power, on the same requests.
+- **Best fixed:** chosen on a separate tuning trace, then frozen.
+
+| 300 test requests | SLA violations | 95% CI |
+|---|---|---|
+| OpenVINO default (TinyLlama INT8 @ CPU) | 152 | 45–56% |
+| Best fixed, tuned (TinyLlama INT4 @ iGPU) | 96 | 27–38% |
+| Simple rule (3B for code or long prompts, else TinyLlama INT4 @ iGPU) | 84 | 23–33% |
+| ORBIT without online correction | 88 | 24–35% |
+| **ORBIT** | **84** | 23–33% |
+
+- **The primary test is significant.** ORBIT vs best fixed: 12 requests only best fixed
+  broke, 0 only ORBIT broke (exact McNemar p = 0.0005).
+  - The gain is routing. ORBIT sends short code requests to the 3B model, which
+    TinyLlama may not serve (HumanEval 7% vs 82–84%).
+  - On requests both served, ORBIT is exactly as fast (time ratio 0.997, 95% CI
+    0.988–1.005).
+- **ORBIT beats the OpenVINO default by 68 violations** (p < 10⁻²⁰), and is 2.8× faster on
+  the requests both served.
+- **ORBIT ties the simple rule** (84 vs 84). On this laptop, choosing the model by request
+  type captures the whole benefit, and the Twin's finer choices change nothing.
+- **Online correction makes the Twin accurate, not the outcome better.** The median TTFT
+  error falls from 30% to 14%, and the decode-speed error from 61% to 5%. The controller
+  swaps models 26 times instead of 69, but has only 4 fewer violations (p = 0.22).
+- **The noise floor** (best fixed run twice) is 1 violation and 1.6% in time. Smaller
+  differences between passes are not claimed.
+- **Most violations are limits this hardware cannot meet**, and fail for every system.
+  The 3B model reaches a first token within 1.5 s only for code prompts up to about 300
+  tokens, while the median code prompt is 1,245 tokens.
+- **The cost of routing is memory:** two models stay resident, about 3.5 GB at peak
+  against 1.1 GB.
+- **A measurement fault was found and corrected before reporting.**
+  - *What happened:* five long prompts were not unique, because the Qwen tokenizer cuts
+    text over 32,768 tokens from the left. Their request tag was lost, and they hit the
+    prefix cache.
+  - *Correction:* the prompt builder was fixed, the 9 affected rows were re-measured, and
+    the change is recorded in the plan (section 13).
+  - *Effect:* the conclusions are unchanged (uncorrected: 14 to 0).
+
 ---
 
 ## 6. Limitations and future work
 
 - **One machine.** Results are specific to a 15 W hybrid laptop CPU with an iGPU. The
   methodology and tools are portable; the numbers are not.
-- **Quality is measured unevenly.** The 3B model has a task-level score (HumanEval).
-  TinyLlama has only bits per byte, which measures how well a model predicts real text,
-  not task accuracy.
+- **Quality is measured on code only.** Both models have a task-level score (HumanEval),
+  but there is no task-level test of chat answers. For chat, quality rests on bits per
+  byte, which measures how well a model predicts real text.
 - **GPU memory accounting.** iGPU buffers live in shared system memory and are only
   partly visible in process memory counters.
 - **KV-cache precision on the GPU** was not studied: it crashed in October, and it works again now (Finding 27).
 - **Cache eviction was tested on chat only**, with 80-token answers. Its intended use,
   very long single generations, was not tested.
-- **The ORBIT evaluation is small** (24 requests per system) and uses a synthetic workload
-  in which one configuration dominates, so it shows no win for ORBIT.
+- **ORBIT's measured win comes from routing, which a one-line rule also achieves** on
+  this laptop (Finding 29).
+  - Conditions that change during a session, such as a busy iGPU or a switch to battery,
+    are where a fixed rule cannot adapt. They were not part of the pre-registered test.
+  - Requests ran one at a time. Real arrival times and queueing were not modeled.
+- **Chat prompt contents are synthetic.** Only their lengths and turn structure come from
+  real data. A follow-up reuses the earlier prompt as a prefix, but not the earlier reply.
+- **ORBIT's prefix-hit predictor handles exact repeats only,** not the partial reuse a
+  chat follow-up gets. It errs on the slow side.
 
 ## 7. Reproducing
 

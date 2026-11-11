@@ -33,6 +33,9 @@ add_executable(repro_gpu_kv_precision repro/repro_gpu_kv_precision.cpp)
 target_link_libraries(repro_gpu_kv_precision PRIVATE openvino::genai)
 add_executable(repro_eviction_prefix repro/repro_eviction_prefix.cpp)
 target_link_libraries(repro_eviction_prefix PRIVATE openvino::genai)
+# Checks that synthetic prompts with different ids stay distinct (Finding 29).
+add_executable(check_prompt_ids repro/check_prompt_ids.cpp telemetry.hpp)
+target_link_libraries(check_prompt_ids PRIVATE openvino::genai psapi pdh advapi32)
 
 if(MSVC)
     target_compile_options(repro_gpu_kv_precision PRIVATE /W4 /utf-8)

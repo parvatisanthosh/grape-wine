@@ -1,0 +1,12 @@
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "first", "prompt_id": "run_1#c1", "ttft_ms": 2139.23, "status": "success", "error": ""}
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "other_tag", "prompt_id": "run_1#c2", "ttft_ms": 2282.05, "status": "success", "error": ""}
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "same_again", "prompt_id": "run_1#c1", "ttft_ms": 3043.35, "status": "success", "error": ""}
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "first", "prompt_id": "run_1#c2", "ttft_ms": 3301.19, "status": "success", "error": ""}
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "other_tag", "prompt_id": "run_1#c10", "ttft_ms": 2868.28, "status": "success", "error": ""}
+{"model": "INT4", "placement": "gpu", "prompt_tokens": 1500, "step": "same_again", "prompt_id": "run_1#c2", "ttft_ms": 2916.0, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 2000, "step": "first", "prompt_id": "run_3#r282", "ttft_ms": 11788.65, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 2000, "step": "other_tag", "prompt_id": "run_3#r286", "ttft_ms": 10328.28, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 2000, "step": "same_again", "prompt_id": "run_3#r282", "ttft_ms": 10637.66, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 4096, "step": "first", "prompt_id": "run_3#r282", "ttft_ms": 25398.13, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 4096, "step": "other_tag", "prompt_id": "run_3#r286", "ttft_ms": 47.0, "status": "success", "error": ""}
+{"model": "Q3B-INT4", "placement": "gpu", "prompt_tokens": 4096, "step": "same_again", "prompt_id": "run_3#r282", "ttft_ms": 49.8, "status": "success", "error": ""}

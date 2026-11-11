@@ -286,13 +286,15 @@ def report_dry_run(comparison, best_fixed):
 
 
 RESULTS_DIR = Path("results/evaluation_v2")
-RAM_FLOOR_MIB = 512
 ACTIVE_CHAT_USERS = 4
 SWEEP_TOP = 5
 
+# Two systems per pass: each keeps its own models loaded, and three at once need
+# more memory than this laptop has free (plan section 10).
 PASSES = {
-    "A": ["orbit", "best_fixed", "best_fixed_aa"],  # primary test + A/A noise run
-    "B": ["default", "rule", "orbit_nocorr"],
+    "A": ["orbit", "best_fixed"],  # the primary test
+    "B": ["rule", "best_fixed_aa"],  # rule, and best fixed again for the noise floor
+    "C": ["orbit_nocorr", "default"],
 }
 # How many models each system keeps loaded.
 RESIDENT = {"orbit": 2, "orbit_nocorr": 2, "rule": 2}
@@ -324,9 +326,10 @@ def judge(request, row, load_ms):
         broken.append("ttft")
     if request.max_tpot_ms and row["tpot_ms_per_token"] > request.max_tpot_ms:
         broken.append("tpot")
+    # Free RAM is recorded but not judged: both systems of a pass keep their models
+    # loaded, so it measures the whole machine, not the system under test (plan
+    # section 11). Running out of memory shows up as a failed run above.
     available = row.get("sys_available_ram_mib")
-    if available is not None and available < RAM_FLOOR_MIB:
-        broken.append("memory")
 
     return {
         "status": "success",
@@ -481,8 +484,18 @@ def sweep(trace_path, top, out, worker_factory=None, context=None):
     return best
 
 
-def compare(trace_path, pass_name, best_fixed, out, seed=0, worker_factory=None, context=None):
-    """Run one pass: its systems take turns on every request, in a shuffled order."""
+def compare(trace_path, pass_name, best_fixed, out, seed=0, worker_factory=None, context=None,
+            block_size=None):
+    """Run one pass on the same requests for each of its systems.
+
+    block_size None: the systems take turns on every request, in a shuffled order,
+    all loaded at once. block_size N: the trace is cut into blocks of N requests;
+    each system serves a block in turn (shuffled per block), and only one system is
+    loaded at a time, so peak memory is one system's (plan section 12). ORBIT's
+    learned state carries over between blocks; loaded models do not.
+    """
+    import random
+
     from evaluate_controller import ResidentService, interleaved_schedule
     from orbit_worker_client import OrbitWorker
 
@@ -490,14 +503,14 @@ def compare(trace_path, pass_name, best_fixed, out, seed=0, worker_factory=None,
     trace = load_trace(trace_path)
     systems = PASSES[pass_name]
     pool = pool_for(trace)
-    print(f"Pass {pass_name}: {systems} on {len(trace)} requests; best fixed {best_fixed}; "
+    mode = f"blocks of {block_size}, one system loaded at a time" if block_size else "interleaved"
+    print(f"Pass {pass_name}: {systems} on {len(trace)} requests ({mode}); best fixed {best_fixed}; "
           f"KV pool {pool}", flush=True)
 
-    services = {
-        system: ResidentService(context.models, RESIDENT.get(system, 1),
-                                worker_factory or OrbitWorker, kv_blocks=pool)
-        for system in systems
-    }
+    def new_service(system):
+        return ResidentService(context.models, RESIDENT.get(system, 1),
+                               worker_factory or OrbitWorker, kv_blocks=pool)
+
     states = {}
     for system in systems:
         state = {"loaded_candidate": None, "gpu_cache_warm": [], "corrections": {}}
@@ -505,17 +518,39 @@ def compare(trace_path, pass_name, best_fixed, out, seed=0, worker_factory=None,
         states[system] = state
 
     done = done_keys(out, "system", "index")
+
+    def run(system, request, service):
+        if (system, request.index) in done:
+            return
+        fixed = best_fixed if system.startswith("best_fixed") else None
+        if system == "default":
+            fixed = orbit.candidate_id(*DEFAULT_CONFIGURATION)
+        record = serve(system, request, service, states[system], context, fixed=fixed)
+        append(out, {"system": system, "pass": pass_name, **request_fields(request), **record})
+        print(f"[{pass_name} {request.index}/{len(trace)}] {system:<14} {record['candidate']} "
+              f"{'VIOLATED ' + record['violations'] if record['violated'] else 'ok'}", flush=True)
+
+    if block_size:
+        rng = random.Random(seed)
+        for start in range(0, len(trace), block_size):
+            block = trace[start:start + block_size]
+            order = list(systems)
+            rng.shuffle(order)
+            for system in order:
+                if all((system, request.index) in done for request in block):
+                    continue
+                service = new_service(system)
+                try:
+                    for request in block:
+                        run(system, request, service)
+                finally:
+                    service.close()
+        return
+
+    services = {system: new_service(system) for system in systems}
     try:
         for index, request, system in interleaved_schedule(trace, systems, seed):
-            if (system, request.index) in done:
-                continue
-            fixed = best_fixed if system.startswith("best_fixed") or system == "default" else None
-            if system == "default":
-                fixed = orbit.candidate_id(*DEFAULT_CONFIGURATION)
-            record = serve(system, request, services[system], states[system], context, fixed=fixed)
-            append(out, {"system": system, "pass": pass_name, **request_fields(request), **record})
-            print(f"[{pass_name} {request.index}/{len(trace)}] {system:<14} {record['candidate']} "
-                  f"{'VIOLATED ' + record['violations'] if record['violated'] else 'ok'}", flush=True)
+            run(system, request, services[system])
     finally:
         for service in services.values():
             service.close()
@@ -563,10 +598,30 @@ def paired_stats(frame, first, second):
     return result
 
 
-def analyze(paths):
-    from quality_core import load_jsonl
+def apply_corrections(frame, corrections, file_name=None):
+    """Replace rows re-measured after a measurement fault (Finding 29).
 
-    frame = pd.DataFrame([row for path in paths for row in load_jsonl(path)])
+    A correction row replaces the row with the same system and index (and, for
+    the sweep, candidate) in the file it names. Returns the frame and the count.
+    """
+    if corrections is None or not len(corrections):
+        return frame, 0
+    keys = ["system", "index"] + (["candidate"] if file_name == "sweep_tuning.jsonl" else [])
+    chosen = corrections if file_name is None else corrections[corrections["file"] == file_name]
+    if file_name is None:
+        chosen = chosen[chosen["file"].str.startswith("pass_")]
+    chosen = chosen.drop(columns=["file"])
+    matched = frame.merge(chosen[keys], on=keys, how="left", indicator=True)["_merge"] == "both"
+    kept = frame[~matched.to_numpy()]
+    return pd.concat([kept, chosen], ignore_index=True), int(matched.sum())
+
+
+def sweep_table(frame):
+    return (frame.groupby("candidate").agg(violations=("violated", "sum"), requests=("violated", "size"))
+            .sort_values("violations"))
+
+
+def analyze_frame(frame):
     print(frame.pivot_table(index="stream", columns="system", values="violated",
                             aggfunc="sum", margins=True).to_string())
     pairs = [("orbit", "best_fixed"), ("best_fixed", "best_fixed_aa"), ("orbit", "rule"),
@@ -575,8 +630,38 @@ def analyze(paths):
                if a in set(frame["system"]) and b in set(frame["system"])]
     for result in results:
         print(json.dumps(result, indent=1, default=float))
-    print("Pairs across passes (orbit vs default, rule or orbit_nocorr) were not run at "
-          "the same time: they are paired by request, not interleaved.")
+    return results
+
+
+def analyze(paths, corrections_path=None, sweep_path=None):
+    """Plan section 4. With corrections, prints the results as measured, then
+    with the re-measured rows in place (both are reported)."""
+    from quality_core import load_jsonl
+
+    frame = pd.DataFrame([row for path in paths for row in load_jsonl(path)])
+    corrections = None
+    if corrections_path and Path(corrections_path).exists():
+        corrections = pd.DataFrame(load_jsonl(corrections_path))
+
+    if sweep_path and Path(sweep_path).exists():
+        sweep_rows = pd.DataFrame(load_jsonl(sweep_path))
+        print("Tuning sweep, as measured:")
+        print(sweep_table(sweep_rows).to_string())
+        if corrections is not None:
+            fixed_sweep, count = apply_corrections(sweep_rows, corrections, "sweep_tuning.jsonl")
+            print(f"Tuning sweep, with {count} re-measured rows:")
+            print(sweep_table(fixed_sweep).to_string())
+        print()
+
+    print("As measured:")
+    results = analyze_frame(frame)
+    if corrections is not None:
+        corrected, count = apply_corrections(frame, corrections)
+        print()
+        print(f"With corrections: {count} rows re-measured with unique prompts (Finding 29):")
+        results = analyze_frame(corrected)
+    print("Only orbit vs best_fixed ran interleaved, in pass A. Every other pair spans two "
+          "passes, so it is paired by request but not run at the same time.")
     return results
 
 
@@ -604,15 +689,21 @@ def main():
     compare_parser.add_argument("--best-fixed", default=None,
                                 help="Default: results/evaluation_v2/best_fixed.json")
     compare_parser.add_argument("--seed", type=int, default=0)
+    compare_parser.add_argument("--block-size", type=int, default=None,
+                                help="Serve blocks of N requests per system, one system loaded at a time.")
     compare_parser.add_argument("--allow-battery", action="store_true")
 
     analyze_parser = sub.add_parser("analyze", help="Statistics from the pass results.")
     analyze_parser.add_argument("paths", type=Path, nargs="+")
+    analyze_parser.add_argument("--corrections", type=Path, default=None,
+                                help="Re-measured rows, e.g. results/evaluation_v2/corrections.jsonl")
+    analyze_parser.add_argument("--sweep", type=Path, default=None,
+                                help="Also summarise the tuning sweep, e.g. results/evaluation_v2/sweep_tuning.jsonl")
 
     args = parser.parse_args()
 
     if args.command == "analyze":
-        analyze(args.paths)
+        analyze(args.paths, args.corrections, args.sweep)
         return
 
     if args.command in ("sweep", "compare"):
@@ -629,7 +720,7 @@ def main():
         best = args.best_fixed or json.loads(
             (RESULTS_DIR / "best_fixed.json").read_text(encoding="utf-8"))["candidate"]
         compare(args.trace, args.pass_name, best,
-                RESULTS_DIR / f"pass_{args.pass_name}.jsonl", args.seed)
+                RESULTS_DIR / f"pass_{args.pass_name}.jsonl", args.seed, block_size=args.block_size)
         return
 
     context = Context.load()

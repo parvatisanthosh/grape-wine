@@ -116,14 +116,30 @@ python twin_v0.py
 
 Full results are in [FINDINGS.md](FINDINGS.md).
 
+- **ORBIT on a real workload (Finding 29):** on 300 requests with real lengths (oasst1
+  chat, Azure 2023 one-shot and code), the plan was fixed in advance. ORBIT broke 84
+  service limits, the tuned best fixed configuration 96 (exact McNemar p = 0.0005) and
+  OpenVINO's default 152.
+  - The gain comes from sending code to the 3B model.
+  - A one-line rule does equally well (84).
+  - Online correction cuts the Twin's decode-speed error from 61% to 5%.
+
 - **Quantization (TinyLlama-1.1B, CPU):** INT8 decodes 1.8–2.0× faster than FP16 and INT4
   2.2–3.1× faster, with 47–49% and 66–68% less memory. On this CPU, "FP16" actually runs
   in f32, because the CPU has no native FP16.
 - **Quantization (Qwen2.5-Coder-3B, HumanEval):** FP16 and INT8 each pass 137 of 164
   problems and INT4 passes 135, with no detectable difference. INT4 weights are 71%
   smaller than FP16.
+  TinyLlama-1.1B passes 10–12 of 164 at every precision (Finding 28): size, not
+  precision, limits quality here.
 - **Prefix caching:** a repeated 1920-token prompt reaches its first token in ~75 ms
   instead of ~13 s (≈ 177×). For unique prompts it has no measurable cost.
+- **What the prefix cache keeps (Finding 26):** OpenVINO's default KV pool keeps only the
+  latest prompt. A fixed pool keeps K conversations with K × ⌈tokens / block size⌉ blocks,
+  and none with one block fewer. This was predicted from the GenAI source and confirmed:
+  45 of 45 hits on the iGPU and 23 of 24 on CPU.
+- **OpenVINO bug (Finding 27):** cache eviction combined with prefix caching crashes a
+  multi-turn chat. It is reproduced in `cpp/repro/` on GenAI 2026.3 and 2026.4.1.
 - **KV cache:** u8 (the CPU default), f16 and f32 cost exactly their theoretical sizes.
   At 1.1B the KV cache is small next to the weights, and prompt-length activations grow
   ~12× faster than it does.
@@ -152,6 +168,10 @@ Full results are in [FINDINGS.md](FINDINGS.md).
 | Hardware: CPU vs iGPU, core placement, model cache, residency, contention, battery | done |
 | 3B model (Qwen2.5-Coder-3B INT4) | done |
 | Performance Twin, optimizer, online correction | done |
-| ORBIT evaluation vs static configuration | preliminary (REPORT.md §5) |
+| ORBIT evaluation vs static configuration | v1 done: no win (REPORT.md §5) |
+| Prefix retention in the KV pool | done (Finding 26) |
+| Minimal repros of the OpenVINO issues | done (Finding 27, `cpp/repro/`) |
+| ORBIT evaluation v2 on real data | done (Finding 29): beats best fixed and default, ties a simple rule |
+| Task-level quality of TinyLlama (HumanEval) | done (Finding 28) |
 | Quality metric (bits per byte) | done |
 | Task-level quality of the 3B model (HumanEval) | done (Finding 25) |

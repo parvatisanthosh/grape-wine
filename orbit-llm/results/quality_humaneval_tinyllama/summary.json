@@ -1,0 +1,57 @@
+{
+  "models": {
+    "fp16": {
+      "passed": 10,
+      "total": 164,
+      "pass_rate": 0.06097560975609756,
+      "ci_low": 0.033454199348097076,
+      "ci_high": 0.1085940175421137,
+      "hit_token_limit": 35
+    },
+    "int8": {
+      "passed": 11,
+      "total": 164,
+      "pass_rate": 0.06707317073170732,
+      "ci_low": 0.037861723037309634,
+      "ci_high": 0.11610249084053711,
+      "hit_token_limit": 32
+    },
+    "int4": {
+      "passed": 12,
+      "total": 164,
+      "pass_rate": 0.07317073170731707,
+      "ci_low": 0.04234887759285955,
+      "ci_high": 0.12353133327262314,
+      "hit_token_limit": 40
+    }
+  },
+  "comparisons": {
+    "fp16_vs_int8": {
+      "problems": 164,
+      "only_first_passed": 3,
+      "only_second_passed": 4,
+      "difference_ci_low": -0.03770374091116716,
+      "difference_ci_high": 0.025508618959947653,
+      "mcnemar_p": 1.0,
+      "identical_answers": 38
+    },
+    "fp16_vs_int4": {
+      "problems": 164,
+      "only_first_passed": 4,
+      "only_second_passed": 6,
+      "difference_ci_low": -0.04994207917374548,
+      "difference_ci_high": 0.025551835271306455,
+      "mcnemar_p": 0.75390625,
+      "identical_answers": 0
+    },
+    "int8_vs_int4": {
+      "problems": 164,
+      "only_first_passed": 5,
+      "only_second_passed": 6,
+      "difference_ci_low": -0.045724284300072575,
+      "difference_ci_high": 0.033529162348853066,
+      "mcnemar_p": 1.0,
+      "identical_answers": 0
+    }
+  }
+}

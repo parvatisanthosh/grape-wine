@@ -1,0 +1,12 @@
+{
+  "candidate": "INT4@gpu",
+  "violations": 112,
+  "trace": "traces\\tuning.jsonl",
+  "swept": [
+    "INT8@gpu",
+    "INT4@gpu",
+    "Q3B-INT4@gpu",
+    "FP16@gpu",
+    "INT8@cpu_auto"
+  ]
+}
