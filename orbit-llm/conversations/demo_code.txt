@@ -1,0 +1,3 @@
+# Coding demo for the 3B model on the iGPU
+Write a Python function that returns True if a string is a palindrome, ignoring case and spaces.
+Now add type hints and a one-line docstring.
