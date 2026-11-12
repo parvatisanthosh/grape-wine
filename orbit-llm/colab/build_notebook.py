@@ -3,6 +3,10 @@
 - humaneval_quality.ipynb: Qwen2.5-Coder-3B, downloaded from Hugging Face.
 - humaneval_tinyllama.ipynb: the laptop's own TinyLlama files, read from Google
   Drive and checked against the SHA-256 fingerprints below.
+- humaneval_score_laptop.ipynb: scores answers generated on the laptop's iGPU
+  (kv_quality.py, one file per KV-cache precision). No model runs on Colab;
+  it only executes the answers' code, sandboxed, which never happens on the
+  laptop.
 
 Run from orbit-llm/colab/:  python build_notebook.py
 """
@@ -267,6 +271,96 @@ print(status)
 """
 
 
+# ---------------------------------------------------------------------------
+# Scoring answers generated on the laptop (KV-cache precision study, Finding 30)
+
+INTRO_LAPTOP = """
+# HumanEval scores for answers generated on the laptop's iGPU
+
+Part of ORBIT-LLM (task SWFW_5S_13). The answers were generated on the laptop, once per
+KV-cache precision, by `kv_quality.py`. This notebook only **runs their code against
+the official tests**, so that model-written code never runs on the laptop. No model and
+no Drive are used here.
+
+**How to use it**
+1. Runtime > Change runtime type > **CPU**.
+2. Run all cells. The upload cell asks for `kv_quality_answers.zip` (from the laptop).
+3. The last cell downloads `kv_quality_scores.zip`. Give it to Claude.
+"""
+
+SETTINGS_LAPTOP = f"""
+PROBLEMS_URL = "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
+PROBLEMS_SHA256 = "{PROBLEMS_SHA256}"
+REFERENCE = "f16"  # highest KV precision: the others are compared with it
+RESULTS_ZIP = "kv_quality_scores.zip"
+from pathlib import Path
+"""
+
+UPLOAD_LAPTOP = """
+import zipfile
+from google.colab import files
+uploaded = files.upload()  # choose kv_quality_answers.zip
+Path("scored").mkdir(exist_ok=True)
+for name in uploaded:
+    with zipfile.ZipFile(name) as archive:
+        for member in archive.namelist():
+            if member.endswith(".jsonl") and "/" not in member:
+                archive.extract(member, "scored")
+print(sorted(path.name for path in Path("scored").glob("*.jsonl")))
+"""
+
+SCORE_LAPTOP = """
+import gzip, json, zipfile
+from collections import Counter
+from google.colab import files
+import quality_core as qc
+
+with gzip.open("HumanEval.jsonl.gz", "rt", encoding="utf-8") as file:
+    problems = {row["task_id"]: row for row in map(json.loads, file)}
+
+# The harness must pass the official solutions before its scores mean anything.
+official = Counter(
+    qc.run_program(
+        f"{p['prompt']}{p['canonical_solution']}\\n\\n{p['test']}\\n\\ncheck({p['entry_point']})\\n"
+    )["outcome"]
+    for p in problems.values()
+)
+print("Official solutions:", dict(official))
+assert official["passed"] == len(problems), "Scoring harness is broken: do not trust the results"
+
+scores = {}
+for path in sorted(Path("scored").glob("*.jsonl")):
+    if path.stem.startswith("outcomes_") or path.stem.endswith("_needle"):
+        continue
+    tag = path.stem.split("_")[-1]  # e.g. Q3B-INT4_gpu_u8 -> u8
+    outcomes = {}
+    with open(f"scored/outcomes_{path.stem}.jsonl", "w", encoding="utf-8") as file:
+        for row in qc.load_jsonl(path):
+            task = row.get("task_id", row.get("id"))
+            result = qc.run_program(qc.build_program(problems[task], row["answer"]))
+            outcomes[task] = result["outcome"] == "passed"
+            file.write(json.dumps({**row, **result}) + "\\n")
+    scores[tag] = outcomes
+    passed, total = sum(outcomes.values()), len(outcomes)
+    low, high = qc.wilson_interval(passed, total)
+    print(f"{path.stem}: {passed}/{total} passed = {passed / total:.1%} (95% CI {low:.1%} to {high:.1%})")
+
+for tag, outcomes in scores.items():
+    if tag == REFERENCE or REFERENCE not in scores:
+        continue
+    shared = outcomes.keys() & scores[REFERENCE].keys()
+    only_reference = sum(scores[REFERENCE][t] and not outcomes[t] for t in shared)
+    only_this = sum(outcomes[t] and not scores[REFERENCE][t] for t in shared)
+    print(f"{REFERENCE} vs {tag}: {only_reference} only {REFERENCE}, {only_this} only {tag}, "
+          f"McNemar p = {qc.mcnemar_exact(only_reference, only_this):.3f}")
+
+with zipfile.ZipFile(RESULTS_ZIP, "w", zipfile.ZIP_DEFLATED) as archive:
+    for path in Path("scored").glob("outcomes_*.jsonl"):
+        archive.write(path, path.name)
+files.download(RESULTS_ZIP)
+"""
+
+
 def notebook(name, cells):
     document = {
         "cells": cells,
@@ -299,6 +393,11 @@ def main():
         [markdown(INTRO_TINYLLAMA), code(SETTINGS_TINYLLAMA), code(INSTALL), code(DRIVE),
          code(CHECK_MODELS), core, generation, code(PROBLEMS_CELL), code(GENERATE_TINYLLAMA),
          code(SCORE)],
+    )
+    notebook(
+        "humaneval_score_laptop.ipynb",
+        [markdown(INTRO_LAPTOP), code(SETTINGS_LAPTOP), core, code(PROBLEMS_CELL),
+         code(UPLOAD_LAPTOP), code(SCORE_LAPTOP)],
     )
 
 

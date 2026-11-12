@@ -24,6 +24,12 @@ target_link_libraries(orbit_run PRIVATE openvino::genai psapi pdh advapi32)
 add_executable(orbit_worker orbit_worker.cpp telemetry.hpp)
 target_link_libraries(orbit_worker PRIVATE openvino::genai psapi pdh advapi32)
 
+# Answers a file of chat prompts with one configuration (task-level quality, Finding 30).
+add_executable(orbit_generate orbit_generate.cpp telemetry.hpp)
+target_link_libraries(orbit_generate PRIVATE openvino::genai psapi pdh advapi32)
+target_include_directories(orbit_generate PRIVATE
+    "${OPENVINO_GENAI_BUILD_DIR}/_deps/nlohmann_json-src/single_include")
+
 # Interactive local chat application (the deployment).
 add_executable(orbit_chat orbit_chat.cpp telemetry.hpp)
 target_link_libraries(orbit_chat PRIVATE openvino::genai psapi)

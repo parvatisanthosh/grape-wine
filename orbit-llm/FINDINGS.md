@@ -983,6 +983,10 @@ against fixed formulas: `16 + 4 = 20` for 8-bit and `16 / 2 + 4 = 12` for 4-bit.
 
 **Consequence:** GPU KV-cache precision can be studied after all.
 
+> **Correction (Finding 30):** this rerun did not test u8 or f16 on the GPU. With the
+> shared `CACHE_DIR`, the GPU model cache returns the first compiled blob whatever KV
+> precision is requested, so these runs used the cached default layout (4-bit).
+
 **Update, same day: still present in the latest release.** The Python version of the
 repro, `cpp/repro/repro_eviction_prefix.py`, was run with OpenVINO GenAI 2026.4.1.0
 (`ab01d1771e4`, pip) in a throwaway environment. Turn 4 fails with the same message and
@@ -1135,3 +1139,101 @@ prompt that long. Re-running them one at a time showed real prefix-cache hits.
     reuse a follow-up gets from its earlier turn: follow-ups ran at 1.6 ms per prompt
     token, against 2.9 for first turns.
   - This errs on the safe side (cold TTFT predicted), and is left as future work.
+
+### Finding 30 — KV-cache precision on the iGPU: 4-bit by default, and the model cache ignores the setting
+
+The study Finding 27 made possible, run 2026-11-11. Model: Qwen2.5-Coder-3B INT4 on the
+Iris Xe iGPU, plus TinyLlama for the layout.
+- **Layout:** `kv_layout.py` → `results/kv_layout.json`. This repeats GenAI's own steps:
+  `SDPAToPagedAttention`, then compile, then read the `key_cache.N` / `value_cache.N`
+  inputs that `kv_cache_manager.hpp` sizes blocks from.
+- **Quality:** `cpp/orbit_generate.cpp` and `kv_quality.py` →
+  `results/kv_quality/`.
+- **Memory:** `kv_memory.py`, from the Windows `GPU Process Memory` counters
+  (`gpu_memory.py`) → `results/kv_memory.jsonl`.
+
+**1. What the iGPU actually stores.** Compiled without a model cache:
+
+| Requested KV precision | Key / value element | Key block (heads, head dim, rows) | Qwen-3B | TinyLlama |
+|---|---|---|---|---|
+| default (`dynamic`) | 4-bit, in u8 containers | [2, 128, 12] | **11.5 KiB/token** | 7.2 KiB/token |
+| u4 or i4 | same as default | [2, 128, 12] | 11.5 | 7.2 |
+| u8 or i8 | i8 | [2, 128, 20] | 20.5 | 12.7 |
+| f16 | f16 | [2, 128, 16] | 36.0 | 22.0 |
+| f32 | compile fails (the GPU computes in f16) | — | — | — |
+
+- **The extra rows are the quantization parameters:** 16 tokens plus 4 for 8-bit, and
+  16/2 plus 4 for 4-bit. Keys are quantized per channel, values per token.
+- **On the CPU the default is u8** (Qwen: 20.8 KiB/token). f32, f16 and u4 also work
+  there; i8 and i4 are rejected.
+- **The default `KV_CACHE_PRECISION = dynamic` means 4-bit on this iGPU,** on 2026.3 and
+  on 2026.4.1. So every GPU measurement in this project ran on a 4-bit KV cache,
+  including evaluation v2 (Finding 29). The HumanEval scores in Findings 25 and 28 were
+  measured on CPU, with a u8 cache.
+
+**2. The GPU model cache ignores `KV_CACHE_PRECISION`.**
+- **What happens:** with `CACHE_DIR` set, a second compile asking for a different
+  precision returns the first compile's blob, with the first one's KV layout. Meanwhile
+  `get_property(KV_CACHE_PRECISION)` reports the new value, as a plain string.
+- **Repro:** `cpp/repro/repro_gpu_cache_kv_precision.py`. It reproduces in both orders
+  (f16 then u8, u8 then f16), on 2026.3 and on 2026.4.1, the latest release.
+- **No upstream report found.** The text to file is in
+  `notes/issue_gpu_cache_kv_precision_TO_FILE.md`.
+- **Consequences here:**
+  - `orbit_worker` always passes the shared `ov_cache/gpu`, so any earlier GPU run that
+    asked for a KV precision got whatever was cached.
+  - The Finding 27 rerun that "succeeded" with u8 and f16 on the GPU therefore did not
+    test those precisions.
+  - October's `Expected 20, but got 12` crash is an 8-bit block size (20) meeting a
+    4-bit cached block (12), which fits this mechanism. That stays a hypothesis, because
+    the crash itself did not come back.
+  - Every measurement below was compiled without a model cache.
+
+**3. Memory: exactly the layout.** Peak shared GPU memory of a fresh process answering
+one prompt, 2 repeats each (identical to within 1 MiB):
+
+| Prompt + output tokens | 4-bit (default) | int8 | f16 | int8 − 4-bit (theory) | f16 − 4-bit (theory) |
+|---|---|---|---|---|---|
+| 1,042 | 2,219 MiB | 2,228 | 2,243 | +9.1 (+9.2) | +24.8 (+24.9) |
+| 2,043 | 2,307 | 2,325 | 2,354 | +18.4 (+18.0) | +47.3 (+48.8) |
+| 3,543 | 2,450 | 2,481 | 2,533 | +31.6 (+31.1) | +83.4 (+84.7) |
+
+- The differences match the layout within 1.5 MiB, so this counter sees the iGPU KV
+  cache exactly. Process RSS does not.
+- **The cache is small next to the weights:** at 3.5k tokens the KV cache is 40, 71 or
+  125 MiB, against about 2.2 GB in total. Memory grows by about 0.09 MiB per prompt
+  token at every precision, and most of that is activations, not KV.
+- **The 4-bit default saves 85 MiB at 3.5k tokens,** about 3% of the process. The saving
+  only matters at much longer contexts or with many sequences.
+
+**4. Speed: no measurable effect.**
+- **Prefill:** the first token took the same time at every precision. At 1k, 2k and
+  3.5k tokens the medians were 5.0–5.4 s, 9.8–9.9 s and 18.7–19.6 s, over 24 prompts
+  per cell.
+- **Decode:** short-context decode on HumanEval was 53–58 ms/token in no consistent
+  order (164 prompts each). Long-context decode was within noise.
+
+**5. Quality.** Greedy decoding, the same prompts and settings as the Colab reference,
+f16 as the reference.
+
+| iGPU KV cache | HumanEval answers identical to f16 | Code identical, ignoring comments | HumanEval pass rate | Long-context retrieval |
+|---|---|---|---|---|
+| 4-bit (default) | 99 / 164 | 112 / 164 | not measured | 72 / 72 |
+| int8 | 156 / 164 | 157 / 164 | not measured | 72 / 72 |
+| f16 | (reference) | — | not measured | 72 / 72 |
+
+- **The 4-bit default changes the output of 40% of HumanEval answers;** int8 changes 5%.
+  Where an answer differs, the median first difference is 395 characters in (4-bit) and 302 (int8).
+  - Whether this costs correctness needs the pass rates, which were **not measured
+    before submission**.
+  - Measuring them means running the generated code, which is done only on Colab. The
+    answers are in `results/kv_quality/kv_quality_answers.zip`, and
+    `colab/humaneval_score_laptop.ipynb` scores them in about 10 minutes on a CPU
+    runtime.
+  - Until then, the 40% figure shows that the outputs change, not that they get worse.
+- **Retrieval does not separate the precisions:**
+  - *Setup:* a 6-digit code next to two decoys with other names, hidden at 10%, 50% or
+    90% depth in 1,000–3,500 tokens of real OpenAssistant text.
+  - *Result:* every precision answered all 72 correctly, with identical answers. The
+    test is at its ceiling for a 3B model at 3.5k tokens, so it shows no loss, but it
+    cannot show a small one.

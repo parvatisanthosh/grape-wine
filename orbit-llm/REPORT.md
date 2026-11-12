@@ -23,7 +23,7 @@ GenAI 2026.3 (built from source). **Models:**
 
 Every number in this report was measured on this machine. The full lab log, with
 methodology, raw-data paths and the reasoning behind each result, is
-**[FINDINGS.md](FINDINGS.md)** (Findings 1–29). This report summarizes
+**[FINDINGS.md](FINDINGS.md)** (Findings 1–30). This report summarizes
 it by learning outcome.
 
 ---
@@ -239,9 +239,40 @@ fixed-size blocks (32 tokens on CPU, 16 on GPU), allocated on demand by a schedu
 |---|---|---|
 | **Prefix caching** | `enable_prefix_caching`; on by default in `LLMPipeline` | A repeated 1920-token prompt: TTFT 13 s → 72–77 ms (~177×). Unique prompts: no measurable cost (Finding 8). In chat, turn 2 of a conversation reached its first token in 0.3 s against 3.3 s for the cold first turn. |
 | **Cache size** | `cache_size` (GB), `num_kv_blocks`, or dynamic | Pre-allocation is committed in full and peaks at ~2× during set-up, but is invisible in the working set (Finding 9). **The size also decides what prefix caching can keep:** the dynamic default keeps only the latest prompt. A fixed pool keeps exactly as many prompts as fit (Finding 26, below). |
-| **KV precision** | `KV_CACHE_PRECISION` hint | CPU default is already u8. Measured sizes match theory. f16 was faster than u8 at 1k context for the 3B model (dequantization cost), but the signal is noisy. On the iGPU, explicit u8 or f16 crashed the paged-attention kernel for the 3B model in October. **The crash could not be reproduced in November** with the same software, driver and settings, and its cause is unknown (Finding 27). |
+| **KV precision** | `KV_CACHE_PRECISION` hint | CPU default: u8. **iGPU default: 4-bit** (the setting reads `dynamic`); u8 gives int8 and f16 works, f32 does not. Memory matches the exact layout within 1.5 MiB; speed is unaffected at ≤3.5k tokens. The GPU model cache silently ignores this setting. See below (Finding 30). |
 | **Attention backend** | `ATTENTION_BACKEND = PA` or `SDPA` | SDPA grew memory 2× faster with prompt length (+462 vs +222 MiB, 256 → 1920 tokens) and was 69% slower to first token. It is consistent with materializing the full attention-score matrix (Finding 7). |
 | **Cache eviction** | `use_cache_eviction` + `CacheEvictionConfig(start, recent, max)` | No benefit in chat, and it crashes together with prefix caching. See below. |
+
+### KV precision on the iGPU (Finding 30)
+
+The precision OpenVINO actually uses was read from the compiled model, the same way GenAI
+sizes its KV blocks, not taken from the property.
+
+| Qwen2.5-Coder-3B on the iGPU | 4-bit (default) | int8 | f16 |
+|---|---|---|---|
+| KV cache per token | 11.5 KiB | 20.5 KiB | 36.0 KiB |
+| Extra GPU memory vs 4-bit at 3.5k tokens, measured (theory) | — | +31.6 MiB (+31.1) | +83.4 MiB (+84.7) |
+| Time to first token at 3.5k tokens | 19.6 s | 18.7 s | 19.3 s |
+| HumanEval answers identical to f16 | 99 / 164 | 156 / 164 | — |
+| Long-context retrieval (1k–3.5k tokens) | 72 / 72 | 72 / 72 | 72 / 72 |
+
+- **The iGPU quantizes the KV cache to 4 bits by default.** Every GPU result in this
+  report used it. Keys are quantized per channel and values per token, with the scales
+  stored inside each block.
+- **At 1–3B parameters the saving is small:** 85 MiB at 3.5k tokens, about 3% of the
+  process. There is no speed cost.
+- **The 4-bit cache changes 40% of HumanEval answers** (int8: 5%). Retrieval at up to
+  3.5k tokens was perfect at every precision.
+  - Whether the changed answers are less often correct is not measured yet. The answers
+    and a scoring notebook are included (Finding 30).
+- **The model cache ignores the precision.** With `CACHE_DIR`, a later compile asking for
+  another KV precision gets the first compile's blob, while the property reports the new
+  value.
+  - Reproduced on OpenVINO 2026.3 and 2026.4.1
+    (`cpp/repro/repro_gpu_cache_kv_precision.py`), and not yet reported upstream.
+  - It likely explains October's GPU crash.
+  - To compare KV precisions on the GPU, compile without a model cache, or use one cache
+    folder per precision.
 
 ### Prefix retention: what the pool keeps (Findings 24 and 26)
 
@@ -448,7 +479,7 @@ The preliminary result led to a second evaluation, fixed in advance in
   byte, which measures how well a model predicts real text.
 - **GPU memory accounting.** iGPU buffers live in shared system memory and are only
   partly visible in process memory counters.
-- **KV-cache precision on the GPU** was not studied: it crashed in October, and it works again now (Finding 27).
+- **KV-cache precision on the GPU** was measured on one 3B model at up to 3.5k tokens (Finding 30). Its effect at much longer contexts, where 4-bit error and memory savings both grow, is untested.
 - **Cache eviction was tested on chat only**, with 80-token answers. Its intended use,
   very long single generations, was not tested.
 - **ORBIT's measured win comes from routing, which a one-line rule also achieves** on

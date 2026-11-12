@@ -89,6 +89,11 @@ $env:Path = "C:\Users\parva\venv\Lib\site-packages\openvino\libs;$env:Path"
 | `colab/`, `summarize_humaneval.py` | Task-level quality: HumanEval on the 3B model at FP16, INT8 and INT4, run on Colab and summarized locally. |
 | `prefix_overwrite_test.py` | Tests whether a prompt survives in the prefix cache when other prompts run in between. |
 | `prefix_pool_study.py` | Finds how many conversations a fixed KV pool keeps, against the prediction from the OpenVINO source (Finding 26). |
+| `evaluate_v2.py`, `build_real_trace.py`, `run_overnight.ps1` | ORBIT evaluation v2 on real request sizes: dry run, tuning sweep, three measured passes and the pre-registered analysis (Finding 29, `notes/evaluation_v2_plan.md`). |
+| `kv_layout.py` | Reads the KV-cache layout OpenVINO actually compiles (element type, block shape, bytes per token) per device and precision (Finding 30). |
+| `cpp/orbit_generate.cpp`, `kv_quality.py` | Task-level quality per KV precision on the laptop: HumanEval answers and a long-context retrieval test, through the GenAI C++ API. |
+| `kv_memory.py`, `gpu_memory.py` | iGPU memory from the Windows `GPU Process Memory` counters, which see the KV cache that process memory counters miss. |
+| `cpp/repro/` | Minimal reproductions of the OpenVINO problems found (Findings 27 and 30); paste-ready reports in `notes/*_TO_FILE.md`. |
 | `data/` | Real datasets for evaluation; see [data/README.md](data/README.md). |
 | `models.json` | Model registry: TinyLlama-1.1B FP16/INT8/INT4, Qwen2.5-Coder-3B INT4. |
 
@@ -140,6 +145,11 @@ Full results are in [FINDINGS.md](FINDINGS.md).
   45 of 45 hits on the iGPU and 23 of 24 on CPU.
 - **OpenVINO bug (Finding 27):** cache eviction combined with prefix caching crashes a
   multi-turn chat. It is reproduced in `cpp/repro/` on GenAI 2026.3 and 2026.4.1.
+- **KV precision on the iGPU (Finding 30):** OpenVINO stores the KV cache in 4 bits
+  by default on this iGPU (11.5 KiB/token for the 3B model, against 36 at f16), read
+  from the compiled model. Measured GPU memory matches to 1.5 MiB, and speed is
+  unchanged. The 4-bit cache changes 40% of HumanEval answers, int8 only 5%. A new
+  OpenVINO bug: the GPU model cache silently ignores `KV_CACHE_PRECISION`.
 - **KV cache:** u8 (the CPU default), f16 and f32 cost exactly their theoretical sizes.
   At 1.1B the KV cache is small next to the weights, and prompt-length activations grow
   ~12× faster than it does.
@@ -170,7 +180,8 @@ Full results are in [FINDINGS.md](FINDINGS.md).
 | Performance Twin, optimizer, online correction | done |
 | ORBIT evaluation vs static configuration | v1 done: no win (REPORT.md §5) |
 | Prefix retention in the KV pool | done (Finding 26) |
-| Minimal repros of the OpenVINO issues | done (Finding 27, `cpp/repro/`) |
+| Minimal repros of the OpenVINO issues | done (Findings 27 and 30, `cpp/repro/`) |
+| KV-cache precision on the iGPU | done (Finding 30); pass rates of the changed answers not yet scored |
 | ORBIT evaluation v2 on real data | done (Finding 29): beats best fixed and default, ties a simple rule |
 | Task-level quality of TinyLlama (HumanEval) | done (Finding 28) |
 | Quality metric (bits per byte) | done |

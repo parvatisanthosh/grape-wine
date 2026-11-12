@@ -23,3 +23,10 @@ only on Colab, with Google Drive unmounted.
   messages, or 3 user turns. It suits interleaved conversations, not long chats.
 - **ARC-Easy** has some questions labelled 1–4 and one with a fifth option. Normalise or
   drop those before scoring.
+
+## Derived files (committed, rebuilt by `kv_quality.py`)
+
+| File | Built from | Command |
+|---|---|---|
+| `humaneval_prompts.jsonl` | HumanEval problems wrapped in the Colab instruction (`colab/quality_core.py`) | `python kv_quality.py prompts` |
+| `needle_prompts.jsonl` | 72 long-context retrieval prompts. The filler is English oasst1 assistant replies (Apache-2.0); the 6-digit codes are synthetic, with seed 7. | `python kv_quality.py needle-prompts` |

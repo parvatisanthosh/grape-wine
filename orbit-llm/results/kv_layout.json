@@ -1,0 +1,594 @@
+[
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "default",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   4,
+   64,
+   12
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   36
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 118272,
+  "kib_per_token": 7.21875,
+  "compile_s": 4.1,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "f32",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "f16",
+  "reported_kv_cache_precision": "<Type: 'float16'>",
+  "key_type": "<Type: 'float16'>",
+  "value_type": "<Type: 'float16'>",
+  "key_block_shape": [
+   4,
+   64,
+   16
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   64
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 360448,
+  "kib_per_token": 22.0,
+  "compile_s": 4.3,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "u8",
+  "reported_kv_cache_precision": "<Type: 'int8_t'>",
+  "key_type": "<Type: 'int8_t'>",
+  "value_type": "<Type: 'int8_t'>",
+  "key_block_shape": [
+   4,
+   64,
+   20
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   68
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 208384,
+  "kib_per_token": 12.71875,
+  "compile_s": 4.6,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "i8",
+  "reported_kv_cache_precision": "<Type: 'int8_t'>",
+  "key_type": "<Type: 'int8_t'>",
+  "value_type": "<Type: 'int8_t'>",
+  "key_block_shape": [
+   4,
+   64,
+   20
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   68
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 208384,
+  "kib_per_token": 12.71875,
+  "compile_s": 4.5,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "u4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   4,
+   64,
+   12
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   36
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 118272,
+  "kib_per_token": 7.21875,
+  "compile_s": 6.1,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "GPU",
+  "requested": "i4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   4,
+   64,
+   12
+  ],
+  "value_block_shape": [
+   4,
+   16,
+   36
+  ],
+  "layers": 22,
+  "block_tokens": 16,
+  "block_bytes": 118272,
+  "kib_per_token": 7.21875,
+  "compile_s": 5.2,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "default",
+  "reported_kv_cache_precision": "<Type: 'uint8_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   4,
+   40,
+   64
+  ],
+  "value_block_shape": [
+   4,
+   32,
+   72
+  ],
+  "layers": 22,
+  "block_tokens": 32,
+  "block_bytes": 428032,
+  "kib_per_token": 13.0625,
+  "compile_s": 2.1,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "f32",
+  "reported_kv_cache_precision": "<Type: 'float32'>",
+  "key_type": "<Type: 'float32'>",
+  "value_type": "<Type: 'float32'>",
+  "key_block_shape": [
+   4,
+   32,
+   64
+  ],
+  "value_block_shape": [
+   4,
+   32,
+   64
+  ],
+  "layers": 22,
+  "block_tokens": 32,
+  "block_bytes": 1441792,
+  "kib_per_token": 44.0,
+  "compile_s": 1.6,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "f16",
+  "reported_kv_cache_precision": "<Type: 'float16'>",
+  "key_type": "<Type: 'float16'>",
+  "value_type": "<Type: 'float16'>",
+  "key_block_shape": [
+   4,
+   32,
+   64
+  ],
+  "value_block_shape": [
+   4,
+   32,
+   64
+  ],
+  "layers": 22,
+  "block_tokens": 32,
+  "block_bytes": 720896,
+  "kib_per_token": 22.0,
+  "compile_s": 1.9,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "u8",
+  "reported_kv_cache_precision": "<Type: 'uint8_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   4,
+   40,
+   64
+  ],
+  "value_block_shape": [
+   4,
+   32,
+   72
+  ],
+  "layers": 22,
+  "block_tokens": 32,
+  "block_bytes": 428032,
+  "kib_per_token": 13.0625,
+  "compile_s": 1.7,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "i8",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "u4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint4_t'>",
+  "value_type": "<Type: 'uint4_t'>",
+  "key_block_shape": [
+   4,
+   48,
+   64
+  ],
+  "value_block_shape": [
+   4,
+   32,
+   80
+  ],
+  "layers": 22,
+  "block_tokens": 32,
+  "block_bytes": 247808.0,
+  "kib_per_token": 7.5625,
+  "compile_s": 1.7,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "TinyLlama-1.1B INT4",
+  "device": "CPU",
+  "requested": "i4",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "default",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   2,
+   128,
+   12
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   68
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 188928,
+  "kib_per_token": 11.53125,
+  "compile_s": 27.9,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "f32",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "f16",
+  "reported_kv_cache_precision": "<Type: 'float16'>",
+  "key_type": "<Type: 'float16'>",
+  "value_type": "<Type: 'float16'>",
+  "key_block_shape": [
+   2,
+   128,
+   16
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   128
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 589824,
+  "kib_per_token": 36.0,
+  "compile_s": 13.0,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "u8",
+  "reported_kv_cache_precision": "<Type: 'int8_t'>",
+  "key_type": "<Type: 'int8_t'>",
+  "value_type": "<Type: 'int8_t'>",
+  "key_block_shape": [
+   2,
+   128,
+   20
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   132
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 336384,
+  "kib_per_token": 20.53125,
+  "compile_s": 9.3,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "i8",
+  "reported_kv_cache_precision": "<Type: 'int8_t'>",
+  "key_type": "<Type: 'int8_t'>",
+  "value_type": "<Type: 'int8_t'>",
+  "key_block_shape": [
+   2,
+   128,
+   20
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   132
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 336384,
+  "kib_per_token": 20.53125,
+  "compile_s": 9.4,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "u4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   2,
+   128,
+   12
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   68
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 188928,
+  "kib_per_token": 11.53125,
+  "compile_s": 8.3,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "GPU",
+  "requested": "i4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   2,
+   128,
+   12
+  ],
+  "value_block_shape": [
+   2,
+   16,
+   68
+  ],
+  "layers": 36,
+  "block_tokens": 16,
+  "block_bytes": 188928,
+  "kib_per_token": 11.53125,
+  "compile_s": 8.3,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "default",
+  "reported_kv_cache_precision": "<Type: 'uint8_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   2,
+   40,
+   128
+  ],
+  "value_block_shape": [
+   2,
+   32,
+   136
+  ],
+  "layers": 36,
+  "block_tokens": 32,
+  "block_bytes": 681984,
+  "kib_per_token": 20.8125,
+  "compile_s": 3.9,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "f32",
+  "reported_kv_cache_precision": "<Type: 'float32'>",
+  "key_type": "<Type: 'float32'>",
+  "value_type": "<Type: 'float32'>",
+  "key_block_shape": [
+   2,
+   32,
+   128
+  ],
+  "value_block_shape": [
+   2,
+   32,
+   128
+  ],
+  "layers": 36,
+  "block_tokens": 32,
+  "block_bytes": 2359296,
+  "kib_per_token": 72.0,
+  "compile_s": 3.1,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "f16",
+  "reported_kv_cache_precision": "<Type: 'float16'>",
+  "key_type": "<Type: 'float16'>",
+  "value_type": "<Type: 'float16'>",
+  "key_block_shape": [
+   2,
+   32,
+   128
+  ],
+  "value_block_shape": [
+   2,
+   32,
+   128
+  ],
+  "layers": 36,
+  "block_tokens": 32,
+  "block_bytes": 1179648,
+  "kib_per_token": 36.0,
+  "compile_s": 2.8,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "u8",
+  "reported_kv_cache_precision": "<Type: 'uint8_t'>",
+  "key_type": "<Type: 'uint8_t'>",
+  "value_type": "<Type: 'uint8_t'>",
+  "key_block_shape": [
+   2,
+   40,
+   128
+  ],
+  "value_block_shape": [
+   2,
+   32,
+   136
+  ],
+  "layers": 36,
+  "block_tokens": 32,
+  "block_bytes": 681984,
+  "kib_per_token": 20.8125,
+  "compile_s": 2.8,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "i8",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "u4",
+  "reported_kv_cache_precision": "<Type: 'uint4_t'>",
+  "key_type": "<Type: 'uint4_t'>",
+  "value_type": "<Type: 'uint4_t'>",
+  "key_block_shape": [
+   2,
+   48,
+   128
+  ],
+  "value_block_shape": [
+   2,
+   32,
+   144
+  ],
+  "layers": 36,
+  "block_tokens": 32,
+  "block_bytes": 387072.0,
+  "kib_per_token": 11.8125,
+  "compile_s": 3.2,
+  "cache_dir": null,
+  "status": "success"
+ },
+ {
+  "model": "Qwen2.5-Coder-3B INT4",
+  "device": "CPU",
+  "requested": "i4",
+  "status": "failed",
+  "error": "Exception from src\\inference\\src\\cpp\\core.cpp:120:"
+ }
+]

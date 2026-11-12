@@ -38,10 +38,20 @@ on a Colab CPU, so that all three 3B precisions ran on the same machine.
     keeps: K × ⌈tokens / block size⌉ blocks for K conversations.
   - Measured: 45 of 45 hits on the iGPU and 23 of 24 on CPU at exactly that size, and 0
     hits one block short.
+- **KV-cache precision on the iGPU:**
+  - Read from the compiled model, OpenVINO stores the KV cache in **4 bits by default**:
+    11.5 KiB per token for the 3B model, against 36 at f16.
+  - Measured GPU memory matches that layout to within 1.5 MiB, and speed does not change.
+  - The 4-bit cache changes 40% of HumanEval answers (int8 only 5%). Retrieval at up to
+    3.5k tokens stays perfect.
+  - See [Finding 30](orbit-llm/FINDINGS.md).
 - **Hardware:** the iGPU is 3–7× faster than the CPU to the first token and 1.4–2.6×
   faster at generating. On the hybrid CPU, two P-cores beat the 12-thread default at
   generating by 16–40%.
-- **An OpenVINO bug, reproduced minimally:**
+- **Two OpenVINO bugs, reproduced minimally:**
+  - The GPU model cache silently ignores `KV_CACHE_PRECISION`: a later compile gets the
+    first compile's KV layout. This reproduces on 2026.3 and 2026.4.1. Report text:
+    [`orbit-llm/notes/issue_gpu_cache_kv_precision_TO_FILE.md`](orbit-llm/notes/issue_gpu_cache_kv_precision_TO_FILE.md).
   - Combining cache eviction with prefix caching crashes a multi-turn chat and leaks KV
     blocks.
   - A 60-line program reproduces it on GenAI 2026.3 and on the latest 2026.4.1.

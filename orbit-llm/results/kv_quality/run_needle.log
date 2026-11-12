@@ -1,0 +1,241 @@
+C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\cpp\build\Release\orbit_generate.exe --model C:/Users/parva/qwen2.5-coder-3b-int4 --device GPU --kv-precision default --prompts C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\data\needle_prompts.jsonl --out C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\results\kv_quality\Q3B-INT4_gpu_default_needle.jsonl --max-new-tokens 16
+Loading C:/Users/parva/qwen2.5-coder-3b-int4 on GPU, KV default ...
+Loaded in 29.4809 s
+[1/72] needle/1000/0.1/0: 7 tokens, 6.66477 s
+[2/72] needle/1000/0.1/1: 7 tokens, 7.07166 s
+[3/72] needle/1000/0.1/2: 7 tokens, 7.46608 s
+[4/72] needle/1000/0.1/3: 7 tokens, 7.88192 s
+[5/72] needle/1000/0.1/4: 7 tokens, 7.09044 s
+[6/72] needle/1000/0.1/5: 7 tokens, 6.84332 s
+[7/72] needle/1000/0.1/6: 7 tokens, 6.3123 s
+[8/72] needle/1000/0.1/7: 7 tokens, 5.96117 s
+[9/72] needle/1000/0.5/0: 7 tokens, 6.03501 s
+[10/72] needle/1000/0.5/1: 7 tokens, 5.95635 s
+[11/72] needle/1000/0.5/2: 7 tokens, 5.9948 s
+[12/72] needle/1000/0.5/3: 7 tokens, 5.83766 s
+[13/72] needle/1000/0.5/4: 7 tokens, 5.76722 s
+[14/72] needle/1000/0.5/5: 7 tokens, 5.77479 s
+[15/72] needle/1000/0.5/6: 7 tokens, 5.57084 s
+[16/72] needle/1000/0.5/7: 7 tokens, 6.12157 s
+[17/72] needle/1000/0.9/0: 7 tokens, 5.42514 s
+[18/72] needle/1000/0.9/1: 7 tokens, 5.41221 s
+[19/72] needle/1000/0.9/2: 7 tokens, 5.63349 s
+[20/72] needle/1000/0.9/3: 7 tokens, 5.52049 s
+[21/72] needle/1000/0.9/4: 7 tokens, 5.6207 s
+[22/72] needle/1000/0.9/5: 7 tokens, 5.44878 s
+[23/72] needle/1000/0.9/6: 7 tokens, 5.34955 s
+[24/72] needle/1000/0.9/7: 7 tokens, 5.22703 s
+[25/72] needle/2000/0.1/0: 7 tokens, 11.298 s
+[26/72] needle/2000/0.1/1: 7 tokens, 11.6851 s
+[27/72] needle/2000/0.1/2: 7 tokens, 10.7885 s
+[28/72] needle/2000/0.1/3: 7 tokens, 10.3102 s
+[29/72] needle/2000/0.1/4: 7 tokens, 11.0598 s
+[30/72] needle/2000/0.1/5: 7 tokens, 10.552 s
+[31/72] needle/2000/0.1/6: 7 tokens, 10.532 s
+[32/72] needle/2000/0.1/7: 7 tokens, 10.6103 s
+[33/72] needle/2000/0.5/0: 7 tokens, 9.95679 s
+[34/72] needle/2000/0.5/1: 7 tokens, 10.1753 s
+[35/72] needle/2000/0.5/2: 7 tokens, 10.2434 s
+[36/72] needle/2000/0.5/3: 7 tokens, 10.4351 s
+[37/72] needle/2000/0.5/4: 7 tokens, 10.4095 s
+[38/72] needle/2000/0.5/5: 7 tokens, 10.5776 s
+[39/72] needle/2000/0.5/6: 7 tokens, 10.1774 s
+[40/72] needle/2000/0.5/7: 7 tokens, 10.2785 s
+[41/72] needle/2000/0.9/0: 7 tokens, 10.2614 s
+[42/72] needle/2000/0.9/1: 7 tokens, 10.2264 s
+[43/72] needle/2000/0.9/2: 7 tokens, 10.8766 s
+[44/72] needle/2000/0.9/3: 7 tokens, 10.061 s
+[45/72] needle/2000/0.9/4: 7 tokens, 9.85108 s
+[46/72] needle/2000/0.9/5: 7 tokens, 10.2561 s
+[47/72] needle/2000/0.9/6: 7 tokens, 9.85538 s
+[48/72] needle/2000/0.9/7: 7 tokens, 9.85346 s
+[49/72] needle/3500/0.1/0: 7 tokens, 21.2309 s
+[50/72] needle/3500/0.1/1: 7 tokens, 21.7066 s
+[51/72] needle/3500/0.1/2: 7 tokens, 19.9422 s
+[52/72] needle/3500/0.1/3: 7 tokens, 19.7943 s
+[53/72] needle/3500/0.1/4: 7 tokens, 19.4 s
+[54/72] needle/3500/0.1/5: 7 tokens, 19.3624 s
+[55/72] needle/3500/0.1/6: 7 tokens, 19.4215 s
+[56/72] needle/3500/0.1/7: 7 tokens, 19.6401 s
+[57/72] needle/3500/0.5/0: 7 tokens, 19.1123 s
+[58/72] needle/3500/0.5/1: 7 tokens, 21.2198 s
+[59/72] needle/3500/0.5/2: 7 tokens, 20.4436 s
+[60/72] needle/3500/0.5/3: 7 tokens, 20.5781 s
+[61/72] needle/3500/0.5/4: 7 tokens, 20.631 s
+[62/72] needle/3500/0.5/5: 7 tokens, 20.3918 s
+[63/72] needle/3500/0.5/6: 7 tokens, 20.8308 s
+[64/72] needle/3500/0.5/7: 7 tokens, 21.3265 s
+[65/72] needle/3500/0.9/0: 7 tokens, 19.8397 s
+[66/72] needle/3500/0.9/1: 7 tokens, 21.0507 s
+[67/72] needle/3500/0.9/2: 7 tokens, 20.9214 s
+[68/72] needle/3500/0.9/3: 7 tokens, 19.778 s
+[69/72] needle/3500/0.9/4: 7 tokens, 19.735 s
+[70/72] needle/3500/0.9/5: 7 tokens, 20.1576 s
+[71/72] needle/3500/0.9/6: 7 tokens, 18.9911 s
+[72/72] needle/3500/0.9/7: 7 tokens, 19.4348 s
+C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\cpp\build\Release\orbit_generate.exe --model C:/Users/parva/qwen2.5-coder-3b-int4 --device GPU --kv-precision u8 --prompts C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\data\needle_prompts.jsonl --out C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\results\kv_quality\Q3B-INT4_gpu_u8_needle.jsonl --max-new-tokens 16
+Loading C:/Users/parva/qwen2.5-coder-3b-int4 on GPU, KV u8 ...
+Loaded in 27.1543 s
+[1/72] needle/1000/0.1/0: 7 tokens, 6.58192 s
+[2/72] needle/1000/0.1/1: 7 tokens, 6.04017 s
+[3/72] needle/1000/0.1/2: 7 tokens, 5.75863 s
+[4/72] needle/1000/0.1/3: 7 tokens, 5.50393 s
+[5/72] needle/1000/0.1/4: 7 tokens, 5.70543 s
+[6/72] needle/1000/0.1/5: 7 tokens, 5.81579 s
+[7/72] needle/1000/0.1/6: 7 tokens, 5.32374 s
+[8/72] needle/1000/0.1/7: 7 tokens, 5.19467 s
+[9/72] needle/1000/0.5/0: 7 tokens, 5.25343 s
+[10/72] needle/1000/0.5/1: 7 tokens, 5.34995 s
+[11/72] needle/1000/0.5/2: 7 tokens, 5.77511 s
+[12/72] needle/1000/0.5/3: 7 tokens, 5.38919 s
+[13/72] needle/1000/0.5/4: 7 tokens, 5.19442 s
+[14/72] needle/1000/0.5/5: 7 tokens, 5.10969 s
+[15/72] needle/1000/0.5/6: 7 tokens, 5.2727 s
+[16/72] needle/1000/0.5/7: 7 tokens, 5.19473 s
+[17/72] needle/1000/0.9/0: 7 tokens, 5.43393 s
+[18/72] needle/1000/0.9/1: 7 tokens, 5.26461 s
+[19/72] needle/1000/0.9/2: 7 tokens, 5.35996 s
+[20/72] needle/1000/0.9/3: 7 tokens, 5.17558 s
+[21/72] needle/1000/0.9/4: 7 tokens, 5.10587 s
+[22/72] needle/1000/0.9/5: 7 tokens, 5.50931 s
+[23/72] needle/1000/0.9/6: 7 tokens, 5.2621 s
+[24/72] needle/1000/0.9/7: 7 tokens, 5.30906 s
+[25/72] needle/2000/0.1/0: 7 tokens, 10.5079 s
+[26/72] needle/2000/0.1/1: 7 tokens, 10.2548 s
+[27/72] needle/2000/0.1/2: 7 tokens, 10.2549 s
+[28/72] needle/2000/0.1/3: 7 tokens, 10.0338 s
+[29/72] needle/2000/0.1/4: 7 tokens, 10.0791 s
+[30/72] needle/2000/0.1/5: 7 tokens, 9.8474 s
+[31/72] needle/2000/0.1/6: 7 tokens, 10.4539 s
+[32/72] needle/2000/0.1/7: 7 tokens, 10.2763 s
+[33/72] needle/2000/0.5/0: 7 tokens, 10.2325 s
+[34/72] needle/2000/0.5/1: 7 tokens, 10.7063 s
+[35/72] needle/2000/0.5/2: 7 tokens, 10.5723 s
+[36/72] needle/2000/0.5/3: 7 tokens, 9.89581 s
+[37/72] needle/2000/0.5/4: 7 tokens, 9.84359 s
+[38/72] needle/2000/0.5/5: 7 tokens, 10.6226 s
+[39/72] needle/2000/0.5/6: 7 tokens, 10.063 s
+[40/72] needle/2000/0.5/7: 7 tokens, 9.77313 s
+[41/72] needle/2000/0.9/0: 7 tokens, 10.2865 s
+[42/72] needle/2000/0.9/1: 7 tokens, 9.88921 s
+[43/72] needle/2000/0.9/2: 7 tokens, 10.1028 s
+[44/72] needle/2000/0.9/3: 7 tokens, 10.5742 s
+[45/72] needle/2000/0.9/4: 7 tokens, 10.5457 s
+[46/72] needle/2000/0.9/5: 7 tokens, 9.85882 s
+[47/72] needle/2000/0.9/6: 7 tokens, 10.3563 s
+[48/72] needle/2000/0.9/7: 7 tokens, 9.92687 s
+[49/72] needle/3500/0.1/0: 7 tokens, 19.0142 s
+[50/72] needle/3500/0.1/1: 7 tokens, 19.9519 s
+[51/72] needle/3500/0.1/2: 7 tokens, 18.8422 s
+[52/72] needle/3500/0.1/3: 7 tokens, 18.9306 s
+[53/72] needle/3500/0.1/4: 7 tokens, 18.8624 s
+[54/72] needle/3500/0.1/5: 7 tokens, 19.2029 s
+[55/72] needle/3500/0.1/6: 7 tokens, 18.6313 s
+[56/72] needle/3500/0.1/7: 7 tokens, 19.1142 s
+[57/72] needle/3500/0.5/0: 7 tokens, 19.7281 s
+[58/72] needle/3500/0.5/1: 7 tokens, 21.4056 s
+[59/72] needle/3500/0.5/2: 7 tokens, 21.0389 s
+[60/72] needle/3500/0.5/3: 7 tokens, 19.2458 s
+[61/72] needle/3500/0.5/4: 7 tokens, 19.2047 s
+[62/72] needle/3500/0.5/5: 7 tokens, 19.4615 s
+[63/72] needle/3500/0.5/6: 7 tokens, 18.9531 s
+[64/72] needle/3500/0.5/7: 7 tokens, 18.632 s
+[65/72] needle/3500/0.9/0: 7 tokens, 19.3848 s
+[66/72] needle/3500/0.9/1: 7 tokens, 18.6352 s
+[67/72] needle/3500/0.9/2: 7 tokens, 18.4724 s
+[68/72] needle/3500/0.9/3: 7 tokens, 19.2927 s
+[69/72] needle/3500/0.9/4: 7 tokens, 18.8985 s
+[70/72] needle/3500/0.9/5: 7 tokens, 19.409 s
+[71/72] needle/3500/0.9/6: 7 tokens, 19.0596 s
+[72/72] needle/3500/0.9/7: 7 tokens, 19.2544 s
+C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\cpp\build\Release\orbit_generate.exe --model C:/Users/parva/qwen2.5-coder-3b-int4 --device GPU --kv-precision f16 --prompts C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\data\needle_prompts.jsonl --out C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\results\kv_quality\Q3B-INT4_gpu_f16_needle.jsonl --max-new-tokens 16
+Loading C:/Users/parva/qwen2.5-coder-3b-int4 on GPU, KV f16 ...
+Loaded in 16.9694 s
+[1/72] needle/1000/0.1/0: 7 tokens, 5.82189 s
+[2/72] needle/1000/0.1/1: 7 tokens, 5.49574 s
+[3/72] needle/1000/0.1/2: 7 tokens, 5.66458 s
+[4/72] needle/1000/0.1/3: 7 tokens, 5.92859 s
+[5/72] needle/1000/0.1/4: 7 tokens, 5.61534 s
+[6/72] needle/1000/0.1/5: 7 tokens, 5.4736 s
+[7/72] needle/1000/0.1/6: 7 tokens, 5.60608 s
+[8/72] needle/1000/0.1/7: 7 tokens, 5.92316 s
+[9/72] needle/1000/0.5/0: 7 tokens, 5.82993 s
+[10/72] needle/1000/0.5/1: 7 tokens, 6.02429 s
+[11/72] needle/1000/0.5/2: 7 tokens, 5.93586 s
+[12/72] needle/1000/0.5/3: 7 tokens, 5.68431 s
+[13/72] needle/1000/0.5/4: 7 tokens, 5.50558 s
+[14/72] needle/1000/0.5/5: 7 tokens, 5.6897 s
+[15/72] needle/1000/0.5/6: 7 tokens, 5.75766 s
+[16/72] needle/1000/0.5/7: 7 tokens, 5.69355 s
+[17/72] needle/1000/0.9/0: 7 tokens, 5.57589 s
+[18/72] needle/1000/0.9/1: 7 tokens, 5.47016 s
+[19/72] needle/1000/0.9/2: 7 tokens, 5.56696 s
+[20/72] needle/1000/0.9/3: 7 tokens, 5.51135 s
+[21/72] needle/1000/0.9/4: 7 tokens, 5.31181 s
+[22/72] needle/1000/0.9/5: 7 tokens, 5.13682 s
+[23/72] needle/1000/0.9/6: 7 tokens, 5.31894 s
+[24/72] needle/1000/0.9/7: 7 tokens, 5.3452 s
+[25/72] needle/2000/0.1/0: 7 tokens, 10.8003 s
+[26/72] needle/2000/0.1/1: 7 tokens, 10.1401 s
+[27/72] needle/2000/0.1/2: 7 tokens, 10.1666 s
+[28/72] needle/2000/0.1/3: 7 tokens, 10.1962 s
+[29/72] needle/2000/0.1/4: 7 tokens, 10.1749 s
+[30/72] needle/2000/0.1/5: 7 tokens, 10.2692 s
+[31/72] needle/2000/0.1/6: 7 tokens, 10.4805 s
+[32/72] needle/2000/0.1/7: 7 tokens, 10.0621 s
+[33/72] needle/2000/0.5/0: 7 tokens, 9.9467 s
+[34/72] needle/2000/0.5/1: 7 tokens, 9.90999 s
+[35/72] needle/2000/0.5/2: 7 tokens, 9.91856 s
+[36/72] needle/2000/0.5/3: 7 tokens, 10.4464 s
+[37/72] needle/2000/0.5/4: 7 tokens, 11.1575 s
+[38/72] needle/2000/0.5/5: 7 tokens, 10.6249 s
+[39/72] needle/2000/0.5/6: 7 tokens, 10.7189 s
+[40/72] needle/2000/0.5/7: 7 tokens, 10.0096 s
+[41/72] needle/2000/0.9/0: 7 tokens, 9.85062 s
+[42/72] needle/2000/0.9/1: 7 tokens, 10.166 s
+[43/72] needle/2000/0.9/2: 7 tokens, 10.8376 s
+[44/72] needle/2000/0.9/3: 7 tokens, 10.1805 s
+[45/72] needle/2000/0.9/4: 7 tokens, 10.3537 s
+[46/72] needle/2000/0.9/5: 7 tokens, 10.8929 s
+[47/72] needle/2000/0.9/6: 7 tokens, 11.3333 s
+[48/72] needle/2000/0.9/7: 7 tokens, 11.5243 s
+[49/72] needle/3500/0.1/0: 7 tokens, 19.4561 s
+[50/72] needle/3500/0.1/1: 7 tokens, 18.6248 s
+[51/72] needle/3500/0.1/2: 7 tokens, 19.2403 s
+[52/72] needle/3500/0.1/3: 7 tokens, 19.5956 s
+[53/72] needle/3500/0.1/4: 7 tokens, 19.5774 s
+[54/72] needle/3500/0.1/5: 7 tokens, 20.6445 s
+[55/72] needle/3500/0.1/6: 7 tokens, 21.5718 s
+[56/72] needle/3500/0.1/7: 7 tokens, 21.0162 s
+[57/72] needle/3500/0.5/0: 7 tokens, 22.0574 s
+[58/72] needle/3500/0.5/1: 7 tokens, 21.8184 s
+[59/72] needle/3500/0.5/2: 7 tokens, 20.7335 s
+[60/72] needle/3500/0.5/3: 7 tokens, 20.5517 s
+[61/72] needle/3500/0.5/4: 7 tokens, 20.7608 s
+[62/72] needle/3500/0.5/5: 7 tokens, 20.6481 s
+[63/72] needle/3500/0.5/6: 7 tokens, 20.9764 s
+[64/72] needle/3500/0.5/7: 7 tokens, 19.1133 s
+[65/72] needle/3500/0.9/0: 7 tokens, 19.029 s
+[66/72] needle/3500/0.9/1: 7 tokens, 19.8366 s
+[67/72] needle/3500/0.9/2: 7 tokens, 19.2381 s
+[68/72] needle/3500/0.9/3: 7 tokens, 18.7102 s
+[69/72] needle/3500/0.9/4: 7 tokens, 19.9403 s
+[70/72] needle/3500/0.9/5: 7 tokens, 19.6126 s
+[71/72] needle/3500/0.9/6: 7 tokens, 18.4799 s
+[72/72] needle/3500/0.9/7: 7 tokens, 18.8788 s
+Traceback (most recent call last):
+  File "C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\kv_memory.py", line 91, in <module>
+    main()
+  File "C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\kv_memory.py", line 84, in main
+    row = {"repeat": repeat, "length": length, **measure(kv, prompts[length], env)}
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\kv_memory.py", line 58, in measure
+    peak = sampler.stop() if sampler else None
+           ^^^^^^^^^^^^^^
+  File "C:\Users\parva\OneDrive\Desktop\open-vino\orbit-llm\gpu_memory.py", line 90, in stop
+    self.join()
+  File "C:\Users\parva\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1119, in join
+    self._wait_for_tstate_lock()
+  File "C:\Users\parva\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1141, in _wait_for_tstate_lock
+    self._stop()
+TypeError: 'Event' object is not callable
